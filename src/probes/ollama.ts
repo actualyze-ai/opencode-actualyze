@@ -1,9 +1,9 @@
 import type { ProbeModelMeta, ProbeResult, ProviderProbe } from "./types";
-import { LOG_PREFIX } from "../constants";
 import {
   buildHeaders,
   probeFetch,
   probeFetchJson,
+  readJson,
   EMPTY_RESULT,
   isFiniteNumber,
 } from "./util";
@@ -100,7 +100,9 @@ export const probeOllama: ProviderProbe = async (
         });
         if (!res) return null;
         if (!res.ok) return null;
-        const data = (await res.json()) as OllamaShowResponse;
+        // Bounded body read: a server can send headers fast then stall the body.
+        const data = await readJson<OllamaShowResponse>(res, 2000);
+        if (!data) return null;
         return { name: tag.name, data };
       }),
     );
@@ -156,8 +158,8 @@ export const probeOllama: ProviderProbe = async (
     }
 
     return { models };
-  } catch (error) {
-    console.warn(`${LOG_PREFIX} Ollama probe failed:`, error);
+  } catch {
+    // Probe failed; degrade silently (never write to stdout/stderr).
     return EMPTY_RESULT;
   }
 };

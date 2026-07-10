@@ -1,7 +1,6 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { LOG_PREFIX } from "./constants";
 
 /**
  * Metadata extracted from a models.dev model entry.
@@ -144,8 +143,8 @@ export async function fetchModelsDevIndex(): Promise<FlatModel[]> {
 
     cache = flat;
     return flat;
-  } catch (error) {
-    console.warn(`${LOG_PREFIX} Failed to read models.dev cache:`, error);
+  } catch {
+    // Cache missing/unreadable — degrade silently (no stdout/stderr).
     cache = [];
     return [];
   }

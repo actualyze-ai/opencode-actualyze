@@ -1,5 +1,4 @@
 import type { ProbeModelMeta, ProbeResult, ProviderProbe } from "./types";
-import { LOG_PREFIX } from "../constants";
 import {
   buildHeaders,
   probeFetchJson,
@@ -67,8 +66,8 @@ export const probeOmlx: ProviderProbe = async (
     }
 
     return { models };
-  } catch (error) {
-    console.warn(`${LOG_PREFIX} oMLX probe failed:`, error);
+  } catch {
+    // Probe failed; degrade silently (never write to stdout/stderr).
     return EMPTY_RESULT;
   }
 };

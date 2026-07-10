@@ -260,10 +260,9 @@ describe("fingerprint", () => {
     });
 
     const result = await fingerprint("http://localhost:8000");
+    // Detected-but-not-configured Ollama does not auto-route, and must be silent.
     expect(result).toBeUndefined();
-    expect(console.warn).toHaveBeenCalledWith(
-      expect.stringContaining("Auto-detect: server looks like Ollama"),
-    );
+    expect(console.warn).not.toHaveBeenCalled();
   });
 
   it("should NOT auto-route on /api/tags match", async () => {
@@ -285,9 +284,7 @@ describe("fingerprint", () => {
 
     const result = await fingerprint("http://localhost:8000");
     expect(result).toBeUndefined();
-    expect(console.warn).toHaveBeenCalledWith(
-      expect.stringContaining("Auto-detect: server looks like Ollama"),
-    );
+    expect(console.warn).not.toHaveBeenCalled();
   });
 
   it("should NOT detect from /api/tags without models array", async () => {

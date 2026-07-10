@@ -7,7 +7,7 @@ at startup. The source files are organized into four concerns:
 
 ```
 src/
-├── constants.ts          # Plugin name, log prefix, command name
+├── constants.ts          # Plugin name, command name
 ├── index.ts              # Server plugin entry — config-hook discovery
 ├── tui.ts                # TUI plugin entry — /modelscout dialog command
 ├── tui-models.ts         # TUI data layer — SDK provider/model → display rows + formatters
@@ -275,13 +275,18 @@ vLLM and SGLang where the models response already contains non-standard fields
 
 Probes must follow these rules:
 
-1. **Use `probeFetch()`** from `./util` for all HTTP calls — it handles
-   timeout (2s default) and abort signal composition automatically
-2. **Never throw** — catch all errors and return `EMPTY_RESULT` from `./util`
-   on failure
-3. **Log warnings** using `LOG_PREFIX` from constants when things go wrong
-4. **Only set capability flags to `true`** — don't set `false` for unknown
-   capabilities (leave them undefined)
+1. **Use `probeFetch()`** from `./util` for all HTTP calls — it handles the
+   connection/headers timeout (2s default) and abort signal composition.
+2. **Read bodies with `readJson()` / `readBody()`** from `./util`, never raw
+   `res.json()` / `res.text()`. The helpers bound the body read with a timeout
+   and cancel the stream; a raw read has no timeout and can hang forever if a
+   server sends headers then stalls the body.
+3. **Never throw** — catch all errors and return `EMPTY_RESULT` from `./util`
+   on failure.
+4. **Never write to stdout/stderr** (no `console.*`). Probes run in opencode's
+   config hook at startup; any output leaks into opencode. Fail silently.
+5. **Only set capability flags to `true`** — don't set `false` for unknown
+   capabilities (leave them undefined).
 
 ### Step-by-Step
 
@@ -294,8 +299,7 @@ import type {
   ProbeContext,
   ProviderProbe,
 } from "./types";
-import { LOG_PREFIX } from "../constants";
-import { buildHeaders, probeFetch, EMPTY_RESULT } from "./util";
+import { buildHeaders, probeFetch, readJson, EMPTY_RESULT } from "./util";
 
 export const probeYourProvider: ProviderProbe = async (
   baseURL: string,
@@ -325,19 +329,18 @@ export const probeYourProvider: ProviderProbe = async (
     });
 
     if (!res) return EMPTY_RESULT;
-    if (!res.ok) {
-      console.warn(`${LOG_PREFIX} YourProvider probe: HTTP ${res.status}`);
-      return EMPTY_RESULT;
-    }
+    if (!res.ok) return EMPTY_RESULT; // degrade silently — no console output
 
-    const data = await res.json();
+    // Bounded body read (never raw res.json()).
+    const data = await readJson<{ models?: unknown[] }>(res);
+    if (!data) return EMPTY_RESULT;
     const models: Record<string, ProbeModelMeta> = {};
 
     // Map response to ProbeModelMeta per model
-    for (const entry of data.models ?? []) {
-      models[entry.id] = {
-        context: entry.context_window,
-        maxTokens: entry.max_output,
+    for (const entry of (data.models ?? []) as Record<string, unknown>[]) {
+      models[entry.id as string] = {
+        context: entry.context_window as number | undefined,
+        maxTokens: entry.max_output as number | undefined,
         modelType: entry.supports_vision ? "vlm" : "llm",
         vision: entry.supports_vision ? true : undefined,
         toolCall: entry.supports_tools ? true : undefined,
@@ -346,9 +349,8 @@ export const probeYourProvider: ProviderProbe = async (
     }
 
     return { models };
-  } catch (error) {
-    console.warn(`${LOG_PREFIX} YourProvider probe failed:`, error);
-    return EMPTY_RESULT;
+  } catch {
+    return EMPTY_RESULT; // never throw, never log
   }
 };
 ```
@@ -435,8 +437,9 @@ try {
     timeoutMs: 1000,
   });
   if (res?.ok) {
-    const data = (await res.json()) as Record<string, unknown>;
-    if (/* response shape is unique to this server */) {
+    // Bounded body read (never raw res.json()).
+    const data = await readJson<Record<string, unknown>>(res, 1000);
+    if (data && /* response shape is unique to this server */) {
       return "yourserver";
     }
   }
@@ -643,12 +646,11 @@ opencode-model-scout/
 
 ### Naming Convention
 
-All user-visible strings (plugin name, log prefix, command name) are defined in
+All naming strings (plugin name, command name) are defined in
 `src/constants.ts`. If the plugin needs to be renamed, only that file changes:
 
 ```typescript
 export const PLUGIN_NAME = "opencode-model-scout";
-export const LOG_PREFIX = `[${PLUGIN_NAME}]`;
 export const COMMAND_NAME = "modelscout";
 ```
 

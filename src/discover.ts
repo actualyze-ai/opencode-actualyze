@@ -7,9 +7,13 @@ import {
   formatNumber,
   formatBytes,
 } from "./format";
-import { LOG_PREFIX } from "./constants";
 import { findMatch, type ModelsDevMeta } from "./models-dev";
-import { buildHeaders, isFiniteNumber, probeFetch } from "./probes/util";
+import {
+  buildHeaders,
+  isFiniteNumber,
+  probeFetch,
+  readJson,
+} from "./probes/util";
 
 /** Snapshot of what was discovered for a single provider. */
 export interface DiscoverySnapshot {
@@ -66,8 +70,9 @@ async function fetchModels(
     });
     if (!res) return [];
     if (!res.ok) return [];
-    const data = (await res.json()) as OpenAIModelsResponse;
-    return Array.isArray(data.data) ? data.data : [];
+    // Bounded body read: some gateways send headers fast then stall the body.
+    const data = await readJson<OpenAIModelsResponse>(res, 3000);
+    return data && Array.isArray(data.data) ? data.data : [];
   } catch {
     return [];
   }
@@ -241,6 +246,11 @@ export async function discoverModels(
   signal?: AbortSignal,
 ): Promise<void> {
   try {
+    // If the config-hook budget already expired (e.g. while the models.dev
+    // index was still loading), do nothing: withTimeout has returned its
+    // fallback and clearing the store now would race a later read.
+    if (signal?.aborted) return;
+
     // Reset store
     discoveryStore = [];
 
@@ -328,11 +338,9 @@ export async function discoverModels(
                 applyProbeMeta(discovered, meta);
               }
             }
-          } catch (error) {
-            console.warn(
-              `${LOG_PREFIX} Probe "${probeType}" failed for ${providerName}:`,
-              error,
-            );
+          } catch {
+            // Probe failed — the model is still discovered, just less enriched.
+            // Never write to stdout/stderr from a config-hook plugin.
           }
         }
 
@@ -345,6 +353,12 @@ export async function discoverModels(
             }
           }
         }
+
+        // If the config-hook budget expired while we were awaiting fetch/probe
+        // above, the hook has already returned its fallback. Do not mutate the
+        // (now-consumed) config or the discovery store — that would be a
+        // post-timeout race with opencode reading the config.
+        if (signal?.aborted) break;
 
         // Clean up internal sentinel before merging into opencode config
         for (const model of Object.values(discoveredModels)) {
@@ -367,15 +381,12 @@ export async function discoverModels(
             detectedServer,
           });
         }
-      } catch (error) {
-        console.warn(
-          `${LOG_PREFIX} Discovery failed for ${providerName}:`,
-          error,
-        );
+      } catch {
+        // Per-provider isolation: one failing provider never blocks the others.
       }
     }
-  } catch (error) {
-    console.warn(`${LOG_PREFIX} Discovery failed:`, error);
+  } catch {
+    // Discovery is best-effort; failures must never break opencode startup.
   }
 }
 

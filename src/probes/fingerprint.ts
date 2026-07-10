@@ -1,7 +1,6 @@
-import { LOG_PREFIX } from "../constants";
 import type { OpenAIModelEntry } from "./types";
 import type { ProbeKey } from "./index";
-import { buildHeaders, probeFetch } from "./util";
+import { buildHeaders, probeFetch, readBody, readJson } from "./util";
 
 export type DetectedServer =
   | "ollama"
@@ -105,8 +104,8 @@ export async function fingerprint(
           timeoutMs: 1000,
         });
         if (res?.ok) {
-          const data = (await res.json()) as Record<string, unknown>;
-          if (typeof data.router === "string") {
+          const data = await readJson<Record<string, unknown>>(res, 1000);
+          if (data && typeof data.router === "string") {
             return "tgi";
           }
         }
@@ -123,7 +122,7 @@ export async function fingerprint(
           timeoutMs: 1000,
         });
         if (res?.ok) {
-          const data = await res.json();
+          const data = await readJson<unknown>(res, 1000);
           if (
             Array.isArray(data) &&
             data.length > 0 &&
@@ -148,11 +147,10 @@ export async function fingerprint(
           timeoutMs: 1000,
         });
         if (res?.ok) {
-          const body = await res.text();
-          if (body.includes("Ollama is running")) {
-            console.warn(
-              `${LOG_PREFIX} Auto-detect: server looks like Ollama. Set "probe": "ollama" in your provider options to enable enrichment.`,
-            );
+          const body = await readBody(res, 1000);
+          if (body?.includes("Ollama is running")) {
+            // Looks like Ollama, but the user did not set "probe": "ollama".
+            // Degrade silently (never write to stdout/stderr).
             return undefined;
           }
         }
@@ -169,15 +167,15 @@ export async function fingerprint(
           timeoutMs: 1000,
         });
         if (res?.ok) {
-          const data = (await res.json()) as Record<string, unknown>;
+          const data = await readJson<Record<string, unknown>>(res, 1000);
           if (
+            data &&
             Array.isArray(data.models) &&
             data.models.length > 0 &&
             typeof (data.models[0] as Record<string, unknown>).name === "string"
           ) {
-            console.warn(
-              `${LOG_PREFIX} Auto-detect: server looks like Ollama. Set "probe": "ollama" in your provider options to enable enrichment.`,
-            );
+            // Looks like Ollama, but the user did not set "probe": "ollama".
+            // Degrade silently (never write to stdout/stderr).
             return undefined;
           }
         }
@@ -188,10 +186,7 @@ export async function fingerprint(
       clearTimeout(globalTimeout);
     }
 
-    // Nothing matched
-    console.warn(
-      `${LOG_PREFIX} Auto-detect: could not identify server at ${baseURL}`,
-    );
+    // Nothing matched — no server type identified. Degrade silently.
     return undefined;
   } catch {
     // Outer safety net — fingerprint must never throw

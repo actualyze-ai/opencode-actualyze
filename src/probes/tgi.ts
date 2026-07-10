@@ -4,7 +4,6 @@ import type {
   ProviderProbe,
   ProbeContext,
 } from "./types";
-import { LOG_PREFIX } from "../constants";
 import {
   buildHeaders,
   probeFetchJson,
@@ -66,8 +65,8 @@ export const probeTgi: ProviderProbe = async (
     // else: leave undefined — don't guess for unknown pipeline tags
 
     return { models: { [modelId]: meta } };
-  } catch (error) {
-    console.warn(`${LOG_PREFIX} TGI probe failed:`, error);
+  } catch {
+    // Probe failed; degrade silently (never write to stdout/stderr).
     return EMPTY_RESULT;
   }
 };

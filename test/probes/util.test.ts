@@ -3,6 +3,8 @@ import {
   probeFetch,
   probeFetchJson,
   buildHeaders,
+  readBody,
+  readJson,
   EMPTY_RESULT,
 } from "../../src/probes/util";
 
@@ -118,8 +120,10 @@ describe("probeFetchJson", () => {
     expect(result).toBeUndefined();
   });
 
-  it("should return undefined and warn on non-OK response", async () => {
+  it("should return undefined on non-OK response without writing to console", async () => {
     const warnSpy = vi.mocked(console.warn);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     mockFetch.mockResolvedValue({
       ok: false,
       status: 503,
@@ -131,13 +135,16 @@ describe("probeFetchJson", () => {
       "test probe",
     );
     expect(result).toBeUndefined();
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining("test probe: HTTP 503"),
-    );
+    // The plugin runs in opencode's config hook and must stay silent.
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(errorSpy).not.toHaveBeenCalled();
+    expect(logSpy).not.toHaveBeenCalled();
   });
 
-  it("should return undefined and warn on JSON parse failure", async () => {
+  it("should return undefined on JSON parse failure without writing to console", async () => {
     const warnSpy = vi.mocked(console.warn);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     mockFetch.mockResolvedValue({
       ok: true,
       status: 200,
@@ -149,10 +156,9 @@ describe("probeFetchJson", () => {
       "test probe",
     );
     expect(result).toBeUndefined();
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining("test probe: JSON parse failed:"),
-      expect.any(SyntaxError),
-    );
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(errorSpy).not.toHaveBeenCalled();
+    expect(logSpy).not.toHaveBeenCalled();
   });
 
   it("should pass custom options through to probeFetch", async () => {
@@ -204,5 +210,94 @@ describe("EMPTY_RESULT", () => {
 
   it("models should be empty", () => {
     expect(Object.keys(EMPTY_RESULT.models).length).toBe(0);
+  });
+});
+
+describe("readBody / readJson — bounded body reads", () => {
+  it("readBody returns undefined when the body read hangs past the timeout", async () => {
+    const cancel = vi.fn().mockResolvedValue(undefined);
+    const res = {
+      text: () => new Promise<string>(() => {}), // never resolves
+      body: { cancel },
+    } as unknown as Response;
+
+    const start = Date.now();
+    const result = await readBody(res, 30);
+    expect(result).toBeUndefined();
+    expect(Date.now() - start).toBeLessThan(1000);
+    expect(cancel).toHaveBeenCalled(); // stream cancelled to release the socket
+  });
+
+  it("readBody returns the text on a fast body", async () => {
+    const res = { text: () => Promise.resolve("hello") } as unknown as Response;
+    expect(await readBody(res, 100)).toBe("hello");
+  });
+
+  it("readJson returns undefined when the body hangs past the timeout", async () => {
+    const cancel = vi.fn().mockResolvedValue(undefined);
+    const res = {
+      json: () => new Promise(() => {}), // never resolves
+      text: () => new Promise<string>(() => {}),
+      body: { cancel },
+    } as unknown as Response;
+
+    const start = Date.now();
+    expect(await readJson(res, 30)).toBeUndefined();
+    expect(Date.now() - start).toBeLessThan(1000);
+    // Response not created via probeFetch (no registered aborter), so the
+    // stream-cancel fallback is what releases the socket here.
+    expect(cancel).toHaveBeenCalled();
+  });
+
+  it("readJson aborts the fetch that probeFetch created when the body stalls", async () => {
+    // A real probeFetch Response registers an AbortController; a stalled body
+    // read must abort it (rejecting the in-flight read + tearing down the
+    // socket), not merely call res.body.cancel().
+    const aborted = vi.fn();
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (_url, init?: RequestInit) => {
+      (init?.signal as AbortSignal | undefined)?.addEventListener(
+        "abort",
+        aborted,
+      );
+      return {
+        ok: true,
+        status: 200,
+        json: () => new Promise(() => {}), // headers arrived, body stalls
+        text: () => new Promise<string>(() => {}),
+        body: { cancel: () => Promise.resolve() },
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    try {
+      const res = await probeFetch("http://x/models", { timeoutMs: 1000 });
+      expect(res).toBeDefined();
+      const result = await readJson(res as Response, 30);
+      expect(result).toBeUndefined();
+      expect(aborted).toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("readJson parses via res.json() when available", async () => {
+    const res = {
+      json: () => Promise.resolve({ a: 1 }),
+    } as unknown as Response;
+    expect(await readJson<{ a: number }>(res, 100)).toEqual({ a: 1 });
+  });
+
+  it("readJson falls back to text + parse when res.json is absent", async () => {
+    const res = {
+      text: () => Promise.resolve('{"b":2}'),
+    } as unknown as Response;
+    expect(await readJson<{ b: number }>(res, 100)).toEqual({ b: 2 });
+  });
+
+  it("readJson returns undefined on malformed body", async () => {
+    const res = {
+      text: () => Promise.resolve("not json"),
+    } as unknown as Response;
+    expect(await readJson(res, 100)).toBeUndefined();
   });
 });

@@ -65,9 +65,11 @@ export interface ProbeResult {
  * models the provider knows about.
  *
  * Probes MUST:
- * - Use probeFetch() from ./util for all HTTP calls (handles timeout + abort)
+ * - Use probeFetch()/readJson()/readBody() from ./util for all HTTP calls
+ *   (handles connection + body-read timeouts and abort)
  * - Never throw — return EMPTY_RESULT from ./util on any error
- * - Log warnings on failure via console.warn with LOG_PREFIX from constants
+ * - Never write to stdout/stderr (no console.*) — this runs during opencode's
+ *   config hook at startup and must stay silent
  */
 export type ProviderProbe = (
   baseURL: string,

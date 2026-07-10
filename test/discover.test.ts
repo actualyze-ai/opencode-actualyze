@@ -705,6 +705,92 @@ describe("discoverModels", () => {
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
+  it("does not mutate provider config when the signal aborts mid-flight", async () => {
+    // Simulate the config-hook budget expiring while /v1/models is in flight:
+    // the fetch resolves normally, but the signal is already aborted by the
+    // time discovery would merge results. The config must stay untouched.
+    const controller = new AbortController();
+    mockFetch.mockImplementation(async (url: string) => {
+      if (url.endsWith("/v1/models")) {
+        controller.abort(); // budget expired during the request
+        return {
+          ok: true,
+          json: async () => ({
+            object: "list",
+            data: [
+              {
+                id: "late-model",
+                object: "model",
+                created: 1700000000,
+                owned_by: "local",
+              },
+            ],
+          }),
+        };
+      }
+      return { ok: false, status: 404 };
+    });
+
+    const config: Record<string, unknown> = {
+      provider: {
+        "my-provider": {
+          npm: "@ai-sdk/openai-compatible",
+          options: { baseURL: "http://localhost:8000/v1" },
+        },
+      },
+    };
+
+    await discoverModels(config, undefined, controller.signal);
+
+    // Discovered models must NOT be merged post-abort — the hook already
+    // returned its fallback and opencode may be reading the config.
+    const provider = (
+      config.provider as Record<string, Record<string, unknown>>
+    )["my-provider"];
+    expect(provider.models).toBeUndefined();
+  });
+
+  it("does not clear the discovery store when already aborted", async () => {
+    // First, a normal run populates the store.
+    setupFetchRouter({
+      "/v1/models": {
+        ok: true,
+        body: {
+          object: "list",
+          data: [
+            {
+              id: "some-model",
+              object: "model",
+              created: 1700000000,
+              owned_by: "local",
+            },
+          ],
+        },
+      },
+    });
+    const config: Record<string, unknown> = {
+      provider: {
+        "my-provider": {
+          npm: "@ai-sdk/openai-compatible",
+          options: { baseURL: "http://localhost:8000/v1" },
+        },
+      },
+    };
+    await discoverModels(config);
+    expect(getDiscoveryStore().length).toBeGreaterThan(0);
+    const populated = getDiscoveryStore();
+
+    // A later invocation with an already-aborted signal (budget expired while
+    // the models.dev index loaded) must bail out before resetting the store.
+    const controller = new AbortController();
+    controller.abort();
+    await discoverModels(config, undefined, controller.signal);
+
+    // Store untouched — not cleared to [].
+    expect(getDiscoveryStore()).toBe(populated);
+    expect(getDiscoveryStore().length).toBeGreaterThan(0);
+  });
+
   it("should continue discovery when one provider throws", async () => {
     mockFetch.mockImplementation(async (url: string) => {
       // Provider A: model list succeeds, but fingerprint probe endpoint throws

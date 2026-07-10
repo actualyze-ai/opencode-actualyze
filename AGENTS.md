@@ -11,7 +11,7 @@ src/tui-models.ts  → TUI data layer: SDK provider/model → display rows (coll
 src/discover.ts    → Pipeline orchestrator, per-provider isolation, DiscoverySnapshot table formatter
 src/models-dev.ts  → models.dev fallback (reads XDG cache file directly)
 src/format.ts      → Pure formatters (model names, numbers/compact, bytes)
-src/constants.ts   → ALL naming centralized here (plugin name, log prefix, command)
+src/constants.ts   → ALL naming centralized here (plugin name, command)
 src/probes/        → Probe implementations, fingerprinting, shared utils
 ```
 

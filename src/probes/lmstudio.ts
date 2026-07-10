@@ -4,7 +4,6 @@ import type {
   ProviderProbe,
   ProbeContext,
 } from "./types";
-import { LOG_PREFIX } from "../constants";
 import {
   buildHeaders,
   probeFetchJson,
@@ -82,8 +81,8 @@ export const probeLmstudio: ProviderProbe = async (
     }
 
     return { models };
-  } catch (error) {
-    console.warn(`${LOG_PREFIX} LM Studio probe failed:`, error);
+  } catch {
+    // Probe failed; degrade silently (never write to stdout/stderr).
     return EMPTY_RESULT;
   }
 };

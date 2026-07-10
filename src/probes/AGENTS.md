@@ -4,10 +4,12 @@
 
 - Capability flags: only set to `true`, never `false`. Undefined = unknown, which is better than wrong.
 - `EMPTY_RESULT` is `Object.freeze()`d. Never mutate after returning it.
-- `probeFetch()` returns `Response | undefined`. It does NOT check `res.ok` — callers split: `if (!res) return EMPTY_RESULT; if (!res.ok) { warn; return EMPTY_RESULT; }`.
+- **Never write to stdout/stderr** (no `console.*`). This runs in opencode's config hook at startup; any output leaks into opencode. Failures degrade silently (return `EMPTY_RESULT`).
+- **Never read a body with raw `res.json()`/`res.text()`.** Use `readJson()`/`readBody()` from `./util` — they bound the body read with a timeout and cancel the stream. A raw read has no timeout and can hang forever if a server sends headers then stalls the body.
+- `probeFetch()` returns `Response | undefined`. It does NOT check `res.ok` — callers split: `if (!res) return EMPTY_RESULT; if (!res.ok) return EMPTY_RESULT;` then read via `readJson()`.
 - `buildHeaders()` does NOT include Content-Type. Add locally when needed (e.g., Ollama POST needs `Content-Type: application/json`, but GET does not).
-- Probes don't receive the global abort signal. They're bounded by `probeFetch`'s 2s default timeout.
-- Outer try-catch must stay even after switching to `probeFetch` — `res.json()` can still throw on malformed bodies.
+- Probes don't receive the global abort signal. They're bounded by `probeFetch`'s 2s default timeout (headers) plus the `readJson`/`readBody` timeout (body).
+- Outer try-catch must stay even after switching to `probeFetch` — parsing can still throw on malformed bodies.
 
 ## Server Quirks
 

@@ -1,5 +1,4 @@
 import type { ProbeResult } from "./types";
-import { LOG_PREFIX } from "../constants";
 
 /**
  * Build request headers, adding Authorization if apiKey is provided.
@@ -28,26 +27,119 @@ export interface ProbeFetchOptions {
 }
 
 /**
+ * Links each Response to the AbortController that owns its underlying fetch, so
+ * a body-read timeout (`raceBody`) can abort the fetch itself. Aborting the
+ * controller reliably rejects an in-flight `res.json()`/`res.text()` and tears
+ * down the socket, whereas `res.body.cancel()` is disturbed by the reader lock
+ * that the body-consuming method already holds. A WeakMap avoids retaining
+ * Responses beyond their normal lifetime.
+ */
+const responseAborters = new WeakMap<Response, AbortController>();
+
+/**
  * Thin wrapper around fetch with timeout and abort signal support.
  * Returns undefined on any failure (network error, timeout, abort).
  * Does NOT check res.ok — that's the caller's decision.
+ *
+ * The composed `AbortSignal.timeout` bounds the connection + headers phase; the
+ * response body is bounded separately by `readBody`/`readJson`, since a signal
+ * that fires late leaves almost no budget for reading the body. Both phases
+ * share one AbortController so a stalled body read can abort the live fetch.
  */
 export async function probeFetch(
   url: string,
   options?: ProbeFetchOptions,
 ): Promise<Response | undefined> {
+  const controller = new AbortController();
   try {
     const signals: AbortSignal[] = [
+      controller.signal,
       AbortSignal.timeout(options?.timeoutMs ?? 2000),
     ];
     if (options?.signal) signals.push(options.signal);
 
-    return await fetch(url, {
+    const res = await fetch(url, {
       method: options?.method,
       headers: options?.headers,
       body: options?.body,
-      signal: signals.length === 1 ? signals[0] : AbortSignal.any(signals),
+      signal: AbortSignal.any(signals),
     });
+    responseAborters.set(res, controller);
+    return res;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Race an arbitrary body-read promise against a hard timeout. A provider can
+ * send headers quickly and then stall the body (e.g. a broken SSE/stream),
+ * which would otherwise block `res.text()`/`res.json()` indefinitely. On
+ * timeout, aborts the underlying fetch (releasing the socket and rejecting the
+ * in-flight read) and returns the `onTimeout` sentinel.
+ *
+ * Aborting the fetch's own AbortController is what actually terminates a stalled
+ * `res.json()`/`res.text()`: once that method owns the body reader, a bare
+ * `res.body.cancel()` is disturbed by the lock and may not tear down the read.
+ * `res.body.cancel()` is kept as a best-effort fallback for Responses created
+ * outside `probeFetch` (e.g. mocks) that have no registered aborter.
+ */
+async function raceBody<T>(
+  res: Response,
+  read: () => Promise<T>,
+  timeoutMs: number,
+  onTimeout: T,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const timeout = new Promise<T>((resolve) => {
+      timer = setTimeout(() => {
+        responseAborters.get(res)?.abort();
+        void res.body?.cancel().catch(() => {});
+        resolve(onTimeout);
+      }, timeoutMs);
+    });
+    return await Promise.race([read(), timeout]);
+  } catch {
+    return onTimeout;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+/**
+ * Read a response body as text with a hard timeout. Returns undefined if the
+ * body does not arrive within `timeoutMs`.
+ */
+export async function readBody(
+  res: Response,
+  timeoutMs = 2000,
+): Promise<string | undefined> {
+  return raceBody(res, () => res.text(), timeoutMs, undefined);
+}
+
+/**
+ * Read + parse a response body as JSON with a hard timeout on the body read.
+ * Returns undefined on timeout, empty body, or malformed JSON. Uses `res.json()`
+ * when available (falling back to `res.text()` + `JSON.parse`), both bounded by
+ * the same timeout.
+ */
+export async function readJson<T>(
+  res: Response,
+  timeoutMs = 2000,
+): Promise<T | undefined> {
+  if (typeof res.json === "function") {
+    return raceBody<T | undefined>(
+      res,
+      async () => (await res.json()) as T,
+      timeoutMs,
+      undefined,
+    );
+  }
+  const text = await readBody(res, timeoutMs);
+  if (text === undefined || text === "") return undefined;
+  try {
+    return JSON.parse(text) as T;
   } catch {
     return undefined;
   }
@@ -55,28 +147,18 @@ export async function probeFetch(
 
 /**
  * Fetch + parse JSON in one call. Returns undefined on any failure:
- * network error, timeout, non-OK status, or malformed JSON.
- * Logs a warning on non-OK responses and JSON parse failures.
+ * network error, timeout, non-OK status, slow/hanging body, or malformed JSON.
+ * Never writes to stdout/stderr.
  */
 export async function probeFetchJson<T>(
   url: string,
-  label: string,
+  _label: string,
   options?: ProbeFetchOptions,
 ): Promise<T | undefined> {
   const res = await probeFetch(url, options);
   if (!res) return undefined;
-
-  if (!res.ok) {
-    console.warn(`${LOG_PREFIX} ${label}: HTTP ${res.status}`);
-    return undefined;
-  }
-
-  try {
-    return (await res.json()) as T;
-  } catch (error) {
-    console.warn(`${LOG_PREFIX} ${label}: JSON parse failed:`, error);
-    return undefined;
-  }
+  if (!res.ok) return undefined;
+  return readJson<T>(res, options?.timeoutMs ?? 2000);
 }
 
 /** Frozen empty probe result — shared constant for early returns. */

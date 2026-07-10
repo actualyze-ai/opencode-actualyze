@@ -193,6 +193,53 @@ describe("probeOllama", () => {
     expect(b.modelType).toBeUndefined();
   });
 
+  it("does not hang when an /api/show body stalls forever", async () => {
+    // The gateway sends /api/show headers, then never sends the body. The
+    // bounded readJson must skip that model instead of blocking the probe.
+    mockFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/api/tags")) {
+        return {
+          ok: true,
+          json: async () => ({
+            models: [
+              { name: "fast", size: 1, details: { family: "llama" } },
+              { name: "stall", size: 2, details: { family: "llama" } },
+            ],
+          }),
+        };
+      }
+      if (url.endsWith("/api/show")) {
+        const model = (JSON.parse(init?.body as string) as { model: string })
+          .model;
+        if (model === "stall") {
+          // Headers arrive; body read never resolves.
+          return {
+            ok: true,
+            json: () => new Promise(() => {}),
+            text: () => new Promise(() => {}),
+            body: { cancel: () => Promise.resolve() },
+          };
+        }
+        return {
+          ok: true,
+          json: async () => ({
+            model_info: { "llama.context_length": 4096 },
+            capabilities: ["completion"],
+          }),
+        };
+      }
+      return { ok: false, status: 404 };
+    });
+
+    const start = Date.now();
+    const result = await probeOllama("http://localhost:11434");
+    // Bounded by readJson's internal timeout (2s), not blocked forever.
+    expect(Date.now() - start).toBeLessThan(5000);
+    // The fast model got its show data; the stalled one falls back to tags only.
+    expect(result.models["fast"].context).toBe(4096);
+    expect(result.models["stall"].context).toBeUndefined();
+  });
+
   it("should extract context_length from different architecture-namespaced keys", async () => {
     setupOllamaMocks(
       {
