@@ -6,8 +6,8 @@
 
 An [opencode](https://github.com/opencode-ai/opencode) plugin that
 auto-discovers models from OpenAI-compatible providers and enriches them with
-context window sizes, capability flags, and model metadata. Supports Ollama,
-oMLX, vLLM, TGI, SGLang, LM Studio, KoboldCpp, llama.cpp, and LocalAI.
+context window sizes, capability flags, and model metadata. Supports Atlas,
+Ollama, oMLX, vLLM, TGI, SGLang, LM Studio, KoboldCpp, llama.cpp, and LocalAI.
 
 ## Quick Start
 
@@ -62,10 +62,11 @@ enriches model entries through three layers, applied in order:
    OpenAI-compatible provider to get the raw model list. Model IDs are
    categorized as chat, embedding, or unknown based on name patterns.
 
-2. **Provider-specific probes** — When a provider has `"probe": "omlx"` or
-   `"probe": "ollama"` in its options, a purpose-built probe calls
-   provider-specific APIs that expose metadata the generic OpenAI API does not.
-   Probes are the most authoritative source and override keyword guesses.
+2. **Provider-specific probes** — When a provider has `"probe": "atlas"`,
+   `"probe": "omlx"`, or another supported probe in its options, a purpose-built
+   probe calls provider-specific APIs that expose metadata the generic OpenAI
+   API does not. Probes are the most authoritative source and override keyword
+   guesses.
 
 3. **models.dev fallback** — For any model that still has gaps after probing,
    the plugin matches the model ID against opencode's built-in
@@ -215,6 +216,10 @@ tiered detection strategy (see [Supported Servers](#supported-servers)) and
 selects the appropriate probe automatically. If detection fails, the provider
 still gets discovery + models.dev fallback enrichment.
 
+Atlas can also be selected explicitly with `"probe": "atlas"`. In auto mode,
+the plugin selects it when the `/v1/models` entries agree on
+`owned_by: "atlas"`.
+
 ### Multiple Providers
 
 The plugin processes every provider in your config independently. You can mix
@@ -256,6 +261,7 @@ of these to let the plugin detect the server type automatically.
 
 | Server        | Probe       | Status   | What It Extracts                                                        |
 | ------------- | ----------- | -------- | ----------------------------------------------------------------------- |
+| **Atlas**     | `atlas`     | Tested   | Context, output limit, vision, tools, reasoning from thinking signals   |
 | **oMLX**      | `omlx`      | Tested   | Context, output limit, model type, load state, size                     |
 | **Ollama**    | `ollama`    | Tested   | Context, tools, vision, thinking, family, quantization                  |
 | **llama.cpp** | `ollama`    | Expected | Partial Ollama metadata (API compat unverified against live instance)   |
@@ -271,6 +277,11 @@ of these to let the plugin detect the server type automatically.
 - **Tested** -- verified against a live instance
 - **Expected** -- API-compatible based on server source code review; not yet tested against a live instance
 - **Untested** -- probe implemented based on API documentation; needs community verification
+
+The Atlas probe reuses the `/v1/models` response, then fetches encoded
+`/v1/models/{id}` detail endpoints with a bounded worker pool. Requests inherit
+the config-hook abort signal, and one failed model does not discard metadata
+from the others. The probe is tested against a live Atlas endpoint.
 
 ### models.dev Fallback
 
@@ -288,6 +299,11 @@ The fallback only applies **capability flags** (`tool_call`, `reasoning`,
 `attachment`, `temperature`, `modalities`, `family`). It does **not** apply
 context or output limits — those vary too much across quantization levels and
 providers to be guessed reliably.
+
+Atlas reports capability booleans authoritatively. A reported `false` blocks a
+models.dev fallback from enabling that capability, but the final opencode config
+still omits false flags. Missing, malformed, or otherwise unknown values remain
+eligible for fallback enrichment.
 
 ## `/modelscout` Command
 
@@ -332,17 +348,19 @@ The plugin is designed to never block opencode startup:
 
 - **Individual fetch calls** use a 3-second timeout (model list) or 2-second
   timeout (probes), all via the shared `probeFetch()` wrapper
-- **The entire config hook** has a 5-second abort timeout — if discovery takes
-  longer, in-flight HTTP requests are cancelled via abort signal propagation
-  and opencode starts normally
+- **The entire config hook** has a 5-second abort timeout. Model-list requests,
+  fingerprinting, and Atlas detail requests consume that signal. Legacy probes
+  remain bounded by their individual request and body-read timeouts.
 - **Per-provider isolation** — each provider is wrapped in its own try-catch,
   so a failing provider never prevents discovery for other providers
-- **All errors are caught and logged** — a failing probe, an offline provider,
+- **Per-model Atlas isolation** — detail requests use bounded concurrency and
+  individual timeouts; a failure only skips enrichment for that model
+- **All errors are caught and isolated** — a failing probe, an offline provider,
   or a malformed response never crashes the plugin or prevents opencode from
   starting
-- **Capability flags are only set to `true`**, never `false` — if a probe
-  can't determine a capability, the field is left undefined (unknown) rather
-  than incorrectly denied
+- **Capability flags are never emitted as `false`** — an authoritative probe
+  value can block fallback internally, while unknown values remain eligible for
+  enrichment
 
 ## Manually Configured Models
 

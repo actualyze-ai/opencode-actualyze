@@ -28,12 +28,19 @@ export interface DiscoverySnapshot {
 
 /** Shape of the OpenAI /v1/models response body. */
 interface OpenAIModelsResponse {
-  object: string;
-  data: OpenAIModelEntry[];
+  data?: unknown;
 }
 
 /** Module-level store of discovery results, reset on each run. */
 let discoveryStore: DiscoverySnapshot[] = [];
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isOpenAIModelEntry(value: unknown): value is OpenAIModelEntry {
+  return isRecord(value) && typeof value.id === "string" && value.id.length > 0;
+}
 
 /** Get the current discovery store (read-only). */
 export function getDiscoveryStore(): readonly DiscoverySnapshot[] {
@@ -72,7 +79,8 @@ async function fetchModels(
     if (!res.ok) return [];
     // Bounded body read: some gateways send headers fast then stall the body.
     const data = await readJson<OpenAIModelsResponse>(res, 3000);
-    return data && Array.isArray(data.data) ? data.data : [];
+    if (!data || !Array.isArray(data.data)) return [];
+    return data.data.filter(isOpenAIModelEntry);
   } catch {
     return [];
   }
@@ -168,6 +176,7 @@ function applyProbeMeta(
   }
 
   // Modalities — probe is more accurate than keyword guess, always override for discovered models
+  if (meta.vision === false) model._probeNoVision = true;
   if (meta.vision || meta.modelType === "vlm") {
     model.modalities = { input: ["text", "image"], output: ["text"] };
     model.attachment = true;
@@ -184,10 +193,12 @@ function applyProbeMeta(
   }
 
   // Capability flags — only set if not already present on model
-  if (meta.toolCall !== undefined && model.tool_call === undefined)
-    model.tool_call = meta.toolCall;
-  if (meta.reasoning !== undefined && model.reasoning === undefined)
-    model.reasoning = meta.reasoning;
+  if (meta.toolCall === true && model.tool_call === undefined)
+    model.tool_call = true;
+  else if (meta.toolCall === false) model._probeNoToolCall = true;
+  if (meta.reasoning === true && model.reasoning === undefined)
+    model.reasoning = true;
+  else if (meta.reasoning === false) model._probeNoReasoning = true;
   // temperature: all probed models support temperature — set as default,
   // allow probe override if it explicitly provides a different value
   if (model.temperature === undefined) model.temperature = true;
@@ -203,28 +214,35 @@ function applyProbeMeta(
 /**
  * Apply models.dev metadata as a fallback enrichment source.
  * Only sets fields that are not already present on the model.
- * Respects probe authority: if a probe confirmed the model as embedding,
- * modalities and attachment are not re-added.
+ * Respects probe authority sentinels for unsupported capabilities and
+ * probe-confirmed embedding models.
  */
 function applyModelsDevMeta(
   model: Record<string, unknown>,
   meta: ModelsDevMeta,
 ): void {
   const isProbeEmbedding = model._probeEmbedding === true;
+  const isToolCallDenied = model._probeNoToolCall === true;
+  const isReasoningDenied = model._probeNoReasoning === true;
+  const isVisionDenied = model._probeNoVision === true;
 
-  if (meta.toolCall && model.tool_call === undefined) model.tool_call = true;
-  if (meta.reasoning && model.reasoning === undefined) model.reasoning = true;
-  if (!isProbeEmbedding && meta.attachment && model.attachment === undefined) {
+  if (meta.toolCall && !isToolCallDenied && model.tool_call === undefined)
+    model.tool_call = true;
+  if (meta.reasoning && !isReasoningDenied && model.reasoning === undefined)
+    model.reasoning = true;
+  if (!isProbeEmbedding && !isVisionDenied && meta.attachment) {
     model.attachment = true;
-    // Also set vision modalities if not already set
-    if (!model.modalities) {
-      model.modalities = { input: ["text", "image"], output: ["text"] };
-    }
+    model.modalities = { input: ["text", "image"], output: ["text"] };
   }
   if (meta.temperature && model.temperature === undefined)
     model.temperature = true;
   if (meta.family && !model.family) model.family = meta.family;
-  if (!isProbeEmbedding && meta.modalities && !model.modalities)
+  if (
+    !isProbeEmbedding &&
+    !isVisionDenied &&
+    meta.modalities &&
+    !model.modalities
+  )
     model.modalities = meta.modalities;
 }
 
@@ -281,14 +299,15 @@ export async function discoverModels(
           string,
           unknown
         >;
-        const discoveredModels: Record<string, Record<string, unknown>> = {};
+        const discoveredModels = Object.create(null) as Record<
+          string,
+          Record<string, unknown>
+        >;
         const skippedIds: string[] = [];
 
         for (const model of openaiModels) {
-          // Skip entries with missing or non-string id
-          if (!model.id || typeof model.id !== "string") continue;
           // Track models already configured but don't overwrite them
-          if (existingModels[model.id] !== undefined) {
+          if (Object.hasOwn(existingModels, model.id)) {
             skippedIds.push(model.id);
             continue;
           }
@@ -320,7 +339,7 @@ export async function discoverModels(
 
         // Resolve probe (supports explicit names, "auto", or undefined)
         const probeType = options?.probe as string | undefined;
-        const context: ProbeContext = { modelsResponse: openaiModels };
+        const context: ProbeContext = { modelsResponse: openaiModels, signal };
         const { probe, detectedServer } = await resolveProbe(
           probeType,
           baseURL,
@@ -363,6 +382,9 @@ export async function discoverModels(
         // Clean up internal sentinel before merging into opencode config
         for (const model of Object.values(discoveredModels)) {
           delete model._probeEmbedding;
+          delete model._probeNoToolCall;
+          delete model._probeNoReasoning;
+          delete model._probeNoVision;
         }
 
         // Merge discovered models into provider config

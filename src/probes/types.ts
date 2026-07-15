@@ -6,13 +6,13 @@ export interface ProbeModelMeta {
   maxTokens?: number;
   /** Model type classification */
   modelType?: "llm" | "vlm" | "embedding";
-  /** Whether the model supports tool/function calling */
+  /** Authoritative tool/function calling support; false blocks fallback only. */
   toolCall?: boolean;
-  /** Whether the model supports reasoning/thinking mode */
+  /** Authoritative reasoning/thinking support; false blocks fallback only. */
   reasoning?: boolean;
   /** Whether the model supports temperature control */
   temperature?: boolean;
-  /** Whether the model supports image/attachment input */
+  /** Authoritative image/attachment support; false blocks fallback only. */
   vision?: boolean;
   /** Whether the model is currently loaded in memory */
   loaded?: boolean;
@@ -52,6 +52,8 @@ export interface OpenAIModelEntry {
 export interface ProbeContext {
   /** Pre-fetched /v1/models entries, for probes that need them */
   modelsResponse?: OpenAIModelEntry[];
+  /** Config-hook cancellation signal for probes with external I/O. */
+  signal?: AbortSignal;
 }
 
 /** Result returned by a provider probe. Keys are model IDs. */

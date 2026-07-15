@@ -3,6 +3,7 @@ import type { ProbeKey } from "./index";
 import { buildHeaders, probeFetch, readBody, readJson } from "./util";
 
 export type DetectedServer =
+  | "atlas"
   | "ollama"
   | "llamacpp"
   | "omlx"
@@ -13,6 +14,7 @@ export type DetectedServer =
   | "koboldcpp";
 
 export const PROBE_MAP: Record<DetectedServer, ProbeKey> = {
+  atlas: "atlas",
   ollama: "ollama",
   llamacpp: "ollama",
   omlx: "omlx",
@@ -25,6 +27,7 @@ export const PROBE_MAP: Record<DetectedServer, ProbeKey> = {
 
 /** owned_by values that uniquely identify a server. */
 const OWNED_BY_MAP: Record<string, DetectedServer> = {
+  atlas: "atlas",
   omlx: "omlx",
   vllm: "vllm",
   sglang: "sglang",
@@ -54,16 +57,21 @@ export async function fingerprint(
 
     if (modelsResponse && modelsResponse.length > 0) {
       // Check owned_by first — most reliable Tier 1 signal
+      const allModelsHaveOwners = modelsResponse.every(
+        (model) => typeof model.owned_by === "string",
+      );
       const ownedByValues = new Set(
         modelsResponse
-          .map((m) => m.owned_by)
-          .filter((v): v is string => v !== undefined),
+          .map((model) => model.owned_by)
+          .filter((owner): owner is string => typeof owner === "string"),
       );
 
-      // If all models agree on owned_by, use it
-      if (ownedByValues.size === 1) {
+      // Only use ownership when every model reports the same string owner.
+      if (allModelsHaveOwners && ownedByValues.size === 1) {
         const ownedBy = [...ownedByValues][0];
-        const detected = OWNED_BY_MAP[ownedBy];
+        const detected = Object.hasOwn(OWNED_BY_MAP, ownedBy)
+          ? OWNED_BY_MAP[ownedBy]
+          : undefined;
         if (detected) {
           return detected;
         }

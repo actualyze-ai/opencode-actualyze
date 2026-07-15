@@ -78,6 +78,100 @@ describe("discoverModels", () => {
     expect(store[0].provider).toBe("my-provider");
   });
 
+  it("keeps valid models when the list contains malformed siblings", async () => {
+    setupFetchRouter({
+      "/v1/models": {
+        ok: true,
+        body: {
+          data: [
+            null,
+            42,
+            "invalid",
+            {},
+            { id: "" },
+            { id: "valid-model", owned_by: "local" },
+          ],
+        },
+      },
+    });
+    const config: Record<string, unknown> = {
+      provider: {
+        generic: {
+          npm: "@ai-sdk/openai-compatible",
+          options: { baseURL: "https://atlas.test/v1" },
+        },
+      },
+    };
+
+    await discoverModels(config);
+
+    const providers = config.provider as Record<
+      string,
+      Record<string, unknown>
+    >;
+    const models = providers.generic.models as Record<string, unknown>;
+    expect(Object.keys(models)).toEqual(["valid-model"]);
+  });
+
+  it("supports reserved property names as literal discovered Atlas model IDs", async () => {
+    const ids = ["constructor", "__proto__"];
+    mockFetch.mockImplementation(async (url: string) => {
+      if (url.endsWith("/v1/models")) {
+        return {
+          ok: true,
+          json: async () => ({
+            data: ids.map((id) => ({ id, owned_by: "atlas" })),
+          }),
+        };
+      }
+      const id = decodeURIComponent(url.split("/").at(-1) ?? "");
+      return {
+        ok: true,
+        json: async () => ({
+          id,
+          object: "model",
+          created: 1_700_000_000,
+          owned_by: "atlas",
+          context_window: 4096,
+          max_output_tokens: 1024,
+          capabilities: {
+            vision: false,
+            tool_use: false,
+            thinking: false,
+            thinking_adaptive: false,
+          },
+        }),
+      };
+    });
+    const config: Record<string, unknown> = {
+      provider: {
+        atlas: {
+          npm: "@ai-sdk/openai-compatible",
+          options: {
+            baseURL: "https://atlas.test/v1",
+            probe: "auto",
+          },
+        },
+      },
+    };
+
+    await discoverModels(config);
+
+    const providers = config.provider as Record<
+      string,
+      Record<string, unknown>
+    >;
+    const models = providers.atlas.models as Record<
+      string,
+      Record<string, unknown>
+    >;
+    for (const id of ids) {
+      expect(Object.hasOwn(models, id)).toBe(true);
+      expect(models[id].id).toBe(id);
+      expect(models[id].limit).toEqual({ context: 4096, output: 1024 });
+    }
+  });
+
   it("should enrich models with oMLX probe", async () => {
     setupFetchRouter({
       "/v1/models/status": {
@@ -519,6 +613,319 @@ describe("discoverModels", () => {
     const model = models["meta-llama/Llama-3-8B"];
     expect(model).toBeDefined();
     expect(model.limit).toEqual({ context: 8192 });
+  });
+
+  it("should auto-detect Atlas and enrich discovered model capabilities", async () => {
+    const id = "atlas/model:latest";
+    mockFetch.mockImplementation(async (url: string) => {
+      if (url.endsWith("/v1/models")) {
+        return {
+          ok: true,
+          json: async () => ({
+            object: "list",
+            data: [
+              {
+                id,
+                object: "model",
+                created: 1_700_000_000,
+                owned_by: "atlas",
+              },
+            ],
+          }),
+        };
+      }
+      if (url.endsWith("/v1/models/atlas%2Fmodel%3Alatest")) {
+        return {
+          ok: true,
+          json: async () => ({
+            id,
+            object: "model",
+            created: 1_700_000_000,
+            owned_by: "atlas",
+            context_window: 131_072,
+            max_output_tokens: 16_384,
+            capabilities: {
+              vision: true,
+              tool_use: true,
+              thinking: true,
+              thinking_adaptive: false,
+            },
+          }),
+        };
+      }
+      return { ok: false, status: 404 };
+    });
+
+    const config: Record<string, unknown> = {
+      provider: {
+        atlas: {
+          npm: "@ai-sdk/openai-compatible",
+          options: {
+            baseURL: "https://atlas.test/openai/v1",
+            probe: "auto",
+          },
+        },
+      },
+    };
+
+    await discoverModels(config);
+
+    const providers = config.provider as Record<
+      string,
+      Record<string, unknown>
+    >;
+    const models = providers.atlas.models as Record<
+      string,
+      Record<string, unknown>
+    >;
+    expect(models[id]).toMatchObject({
+      limit: { context: 131_072, output: 16_384 },
+      modalities: { input: ["text", "image"], output: ["text"] },
+      attachment: true,
+      tool_call: true,
+      reasoning: true,
+    });
+  });
+
+  it("should keep authoritative Atlas false capabilities ahead of models.dev", async () => {
+    const id = "all-capabilities-disabled";
+    mockFetch.mockImplementation(async (url: string) => {
+      if (url.endsWith("/v1/models")) {
+        return {
+          ok: true,
+          json: async () => ({
+            object: "list",
+            data: [
+              {
+                id,
+                object: "model",
+                created: 1_700_000_000,
+                owned_by: "atlas",
+              },
+            ],
+          }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          id,
+          object: "model",
+          created: 1_700_000_000,
+          owned_by: "atlas",
+          context_window: null,
+          max_output_tokens: null,
+          capabilities: {
+            vision: false,
+            tool_use: false,
+            thinking: false,
+            thinking_adaptive: false,
+          },
+        }),
+      };
+    });
+
+    const config: Record<string, unknown> = {
+      provider: {
+        atlas: {
+          npm: "@ai-sdk/openai-compatible",
+          options: {
+            baseURL: "https://atlas.test/openai/v1",
+            probe: "auto",
+          },
+        },
+      },
+    };
+    const modelsDevIndex = [
+      {
+        id,
+        normalized: id,
+        meta: {
+          toolCall: true,
+          reasoning: true,
+          attachment: true,
+          temperature: true,
+          modalities: { input: ["text", "image"], output: ["text"] },
+        },
+      },
+    ];
+
+    await discoverModels(config, modelsDevIndex);
+
+    const providers = config.provider as Record<
+      string,
+      Record<string, unknown>
+    >;
+    const models = providers.atlas.models as Record<
+      string,
+      Record<string, unknown>
+    >;
+    expect(models[id]).toMatchObject({
+      modalities: { input: ["text"], output: ["text"] },
+    });
+    expect(models[id].tool_call).toBeUndefined();
+    expect(models[id].reasoning).toBeUndefined();
+    expect(models[id].attachment).toBeUndefined();
+    expect(
+      Object.keys(models[id]).some((key) => key.startsWith("_probe")),
+    ).toBe(false);
+  });
+
+  it("should allow models.dev fallback for unknown Atlas capability values", async () => {
+    const id = "unknown-capabilities";
+    mockFetch.mockImplementation(async (url: string) => {
+      if (url.endsWith("/v1/models")) {
+        return {
+          ok: true,
+          json: async () => ({
+            object: "list",
+            data: [
+              {
+                id,
+                object: "model",
+                created: 1_700_000_000,
+                owned_by: "atlas",
+              },
+            ],
+          }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          id,
+          object: "model",
+          created: 1_700_000_000,
+          owned_by: "atlas",
+          context_window: null,
+          max_output_tokens: null,
+          capabilities: {
+            vision: "unknown",
+            tool_use: null,
+            thinking: false,
+          },
+        }),
+      };
+    });
+
+    const config: Record<string, unknown> = {
+      provider: {
+        atlas: {
+          npm: "@ai-sdk/openai-compatible",
+          options: {
+            baseURL: "https://atlas.test/openai/v1",
+            probe: "auto",
+          },
+        },
+      },
+    };
+    const modelsDevIndex = [
+      {
+        id,
+        normalized: id,
+        meta: {
+          toolCall: true,
+          reasoning: true,
+          attachment: true,
+          temperature: true,
+        },
+      },
+    ];
+
+    await discoverModels(config, modelsDevIndex);
+
+    const providers = config.provider as Record<
+      string,
+      Record<string, unknown>
+    >;
+    const models = providers.atlas.models as Record<
+      string,
+      Record<string, unknown>
+    >;
+    expect(models[id]).toMatchObject({
+      tool_call: true,
+      reasoning: true,
+      attachment: true,
+      modalities: { input: ["text", "image"], output: ["text"] },
+    });
+  });
+
+  it("should map adaptive-only Atlas reasoning without enabling false capabilities", async () => {
+    const id = "adaptive-model";
+    mockFetch.mockImplementation(async (url: string) => {
+      if (url.endsWith("/v1/models")) {
+        return {
+          ok: true,
+          json: async () => ({
+            object: "list",
+            data: [
+              {
+                id,
+                object: "model",
+                created: 1_700_000_000,
+                owned_by: "atlas",
+              },
+            ],
+          }),
+        };
+      }
+      if (url.endsWith("/v1/models/adaptive-model")) {
+        return {
+          ok: true,
+          json: async () => ({
+            id,
+            object: "model",
+            created: 1_700_000_000,
+            owned_by: "atlas",
+            context_window: null,
+            max_output_tokens: null,
+            capabilities: {
+              vision: false,
+              tool_use: false,
+              thinking: false,
+              thinking_adaptive: true,
+            },
+          }),
+        };
+      }
+      return { ok: false, status: 404 };
+    });
+
+    const config: Record<string, unknown> = {
+      provider: {
+        atlas: {
+          npm: "@ai-sdk/openai-compatible",
+          options: {
+            baseURL: "https://atlas.test/openai/v1",
+            probe: "auto",
+          },
+        },
+      },
+    };
+
+    await discoverModels(config);
+
+    const providers = config.provider as Record<
+      string,
+      Record<string, unknown>
+    >;
+    const models = providers.atlas.models as Record<
+      string,
+      Record<string, unknown>
+    >;
+    expect({
+      modalities: models[id].modalities,
+      attachment: models[id].attachment,
+      tool_call: models[id].tool_call,
+      reasoning: models[id].reasoning,
+      limit: models[id].limit,
+    }).toEqual({
+      modalities: { input: ["text"], output: ["text"] },
+      attachment: undefined,
+      tool_call: undefined,
+      reasoning: true,
+      limit: undefined,
+    });
   });
 
   it("should skip probing when auto-detection returns undefined", async () => {

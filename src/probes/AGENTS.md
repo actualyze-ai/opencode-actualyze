@@ -2,13 +2,18 @@
 
 ## Writing Probes
 
-- Capability flags: only set to `true`, never `false`. Undefined = unknown, which is better than wrong.
+- Capability flags normally stay `true` or undefined. A probe may return `false`
+  only when the provider reports an authoritative boolean; discovery uses that
+  value as an internal fallback-denial sentinel and does not emit false config
+  flags. Missing or wrong-type values remain unknown so models.dev may fill them.
 - `EMPTY_RESULT` is `Object.freeze()`d. Never mutate after returning it.
 - **Never write to stdout/stderr** (no `console.*`). This runs in opencode's config hook at startup; any output leaks into opencode. Failures degrade silently (return `EMPTY_RESULT`).
 - **Never read a body with raw `res.json()`/`res.text()`.** Use `readJson()`/`readBody()` from `./util` — they bound the body read with a timeout and cancel the stream. A raw read has no timeout and can hang forever if a server sends headers then stalls the body.
 - `probeFetch()` returns `Response | undefined`. It does NOT check `res.ok` — callers split: `if (!res) return EMPTY_RESULT; if (!res.ok) return EMPTY_RESULT;` then read via `readJson()`.
 - `buildHeaders()` does NOT include Content-Type. Add locally when needed (e.g., Ollama POST needs `Content-Type: application/json`, but GET does not).
-- Probes don't receive the global abort signal. They're bounded by `probeFetch`'s 2s default timeout (headers) plus the `readJson`/`readBody` timeout (body).
+- `ProbeContext.signal` carries the config-hook abort signal. New probes and
+  probes that add external I/O should pass it to `probeFetch`. Atlas does this;
+  legacy probes still rely on `probeFetch` and body-read timeouts.
 - Outer try-catch must stay even after switching to `probeFetch` — parsing can still throw on malformed bodies.
 
 ## Server Quirks

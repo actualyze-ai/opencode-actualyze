@@ -63,6 +63,17 @@ describe("fingerprint", () => {
     expect(result).toBe("omlx");
   });
 
+  it("should detect atlas from owned_by", async () => {
+    const models = [makeModel({ owned_by: "atlas" })];
+    const result = await fingerprint(
+      "https://atlas.test/openai",
+      undefined,
+      models,
+    );
+    expect(result).toBe("atlas");
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
   it("should detect vllm from owned_by", async () => {
     const models = [makeModel({ owned_by: "vllm" })];
     const result = await fingerprint(
@@ -190,6 +201,29 @@ describe("fingerprint", () => {
       models,
     );
     expect(result).toBeUndefined();
+  });
+
+  it("should treat a missing owner among Atlas models as inconclusive", async () => {
+    const models = [
+      makeModel({ id: "model-a", owned_by: "atlas" }),
+      makeModel({ id: "model-b", owned_by: undefined }),
+    ];
+    mockAllEndpoints404();
+
+    const result = await fingerprint("https://atlas.test", undefined, models);
+
+    expect(result).toBeUndefined();
+  });
+
+  it("should not resolve prototype-key owners through inherited properties", async () => {
+    mockAllEndpoints404();
+
+    for (const ownedBy of ["constructor", "__proto__"]) {
+      const result = await fingerprint("https://atlas.test", undefined, [
+        makeModel({ owned_by: ownedBy }),
+      ]);
+      expect(result).toBeUndefined();
+    }
   });
 
   // ── Tier 2 — endpoint probes ─────────────────────────────────────
@@ -333,6 +367,7 @@ describe("fingerprint", () => {
   });
 
   it("should map detected server to correct probe", () => {
+    expect(PROBE_MAP["atlas"]).toBe("atlas");
     expect(PROBE_MAP["llamacpp"]).toBe("ollama");
     expect(PROBE_MAP["ollama"]).toBe("ollama");
     expect(PROBE_MAP["omlx"]).toBe("omlx");
