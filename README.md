@@ -217,8 +217,8 @@ selects the appropriate probe automatically. If detection fails, the provider
 still gets discovery + models.dev fallback enrichment.
 
 Atlas can also be selected explicitly with `"probe": "atlas"`. In auto mode,
-the plugin selects it when the `/v1/models` entries agree on
-`owned_by: "atlas"`.
+the plugin selects it when any valid `/v1/models` entry reports the exact owner
+`atlas`. Other recognized owners still require unanimous ownership.
 
 ### Multiple Providers
 
@@ -281,7 +281,10 @@ of these to let the plugin detect the server type automatically.
 The Atlas probe reuses the `/v1/models` response, then fetches encoded
 `/v1/models/{id}` detail endpoints with a bounded worker pool. Requests inherit
 the config-hook abort signal, and one failed model does not discard metadata
-from the others. The probe is tested against a live Atlas endpoint.
+from the others. Auto-selected probes request details only for Atlas-owned
+entries in a mixed catalog; an explicit `"probe": "atlas"` remains an
+all-model manual override. Foreign-owner entries remain discovered and use the
+normal models.dev fallback. The probe is tested against a live Atlas endpoint.
 
 ### models.dev Fallback
 

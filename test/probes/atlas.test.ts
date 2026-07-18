@@ -11,6 +11,13 @@ function listedModel(id: string): OpenAIModelEntry {
   };
 }
 
+function listedModelWithOwner(
+  id: string,
+  ownedBy: string | undefined,
+): OpenAIModelEntry {
+  return { ...listedModel(id), owned_by: ownedBy };
+}
+
 function detail(
   id: string,
   overrides: Record<string, unknown> = {},
@@ -43,6 +50,93 @@ afterEach(() => {
 });
 
 describe("probeAtlas", () => {
+  it("auto mode requests each unique Atlas-owned safe ID and no others", async () => {
+    const encodedId = "atlas/model:latest";
+    mockFetch.mockImplementation(async (url: string) => {
+      const id = decodeURIComponent(url.split("/").at(-1) ?? "");
+      return { ok: true, json: async () => detail(id) };
+    });
+
+    const result = await probeAtlas("https://atlas.test/openai", undefined, {
+      probeSelection: "auto",
+      modelsResponse: [
+        listedModel(encodedId),
+        listedModel(encodedId),
+        listedModelWithOwner("foreign", "vllm"),
+        listedModelWithOwner("ownerless", undefined),
+        listedModelWithOwner("Atlas-case", "Atlas"),
+        listedModel("."),
+      ],
+    });
+
+    expect(mockFetch).toHaveBeenCalledOnce();
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://atlas.test/openai/v1/models/atlas%2Fmodel%3Alatest",
+      expect.any(Object),
+    );
+    expect(Object.keys(result.models)).toEqual([encodedId]);
+  });
+
+  it("auto mode returns empty before requests when no entry is Atlas-owned", async () => {
+    const result = await probeAtlas("https://atlas.test/openai", "secret", {
+      probeSelection: "auto",
+      modelsResponse: [
+        listedModelWithOwner("foreign", "vllm"),
+        listedModelWithOwner("ownerless", undefined),
+        listedModelWithOwner("padded", "atlas "),
+      ],
+    });
+
+    expect(result).toEqual({ models: {} });
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it.each(["explicit", undefined] as const)(
+    "%s selection requests safe foreign and ownerless IDs",
+    async (probeSelection) => {
+      mockFetch.mockImplementation(async (url: string) => {
+        const id = decodeURIComponent(url.split("/").at(-1) ?? "");
+        return { ok: true, json: async () => detail(id) };
+      });
+
+      const result = await probeAtlas("https://atlas.test/openai", undefined, {
+        probeSelection,
+        modelsResponse: [
+          listedModelWithOwner("foreign", "vllm"),
+          listedModelWithOwner("ownerless", undefined),
+        ],
+      });
+
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(Object.keys(result.models).sort()).toEqual([
+        "foreign",
+        "ownerless",
+      ]);
+    },
+  );
+
+  it("isolates failed and rate-limited Atlas details from a successful sibling", async () => {
+    mockFetch.mockImplementation(async (url: string) => {
+      const id = decodeURIComponent(url.split("/").at(-1) ?? "");
+      if (id === "failed") throw new Error("ECONNRESET");
+      if (id === "limited") return { ok: false, status: 429 };
+      return { ok: true, json: async () => detail(id) };
+    });
+
+    const result = await probeAtlas("https://atlas.test/openai", undefined, {
+      probeSelection: "auto",
+      modelsResponse: [
+        listedModel("good"),
+        listedModel("failed"),
+        listedModel("limited"),
+      ],
+    });
+
+    expect(result.models).toEqual({
+      good: expect.objectContaining({ context: 131_072 }),
+    });
+  });
+
   it("maps full Atlas metadata and sends auth to the encoded detail URL", async () => {
     const id = "org/model:latest";
     mockFetch.mockResolvedValue({
@@ -278,6 +372,7 @@ describe("probeAtlas", () => {
     });
 
     const resultPromise = probeAtlas("https://atlas.test/openai", undefined, {
+      probeSelection: "auto",
       modelsResponse: ids.map(listedModel),
     });
     await vi.waitFor(() => expect(active).toBe(8));
@@ -309,6 +404,7 @@ describe("probeAtlas", () => {
     );
 
     const resultPromise = probeAtlas("https://atlas.test/openai", undefined, {
+      probeSelection: "auto",
       modelsResponse: ids.map(listedModel),
       signal: controller.signal,
     });

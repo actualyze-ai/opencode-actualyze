@@ -42,7 +42,7 @@ const OWNED_BY_MAP: Record<string, DetectedServer> = {
  * Uses a tiered approach:
  * - Tier 1: Inspect owned_by and non-standard fields from modelsResponse (free, no HTTP)
  * - Tier 2: Probe server-specific endpoints (sequential, with timeout)
- * - Tier 3: Low-confidence checks (log suggestion only, return undefined)
+ * - Tier 3: Low-confidence checks (return undefined silently)
  *
  * Never throws — returns undefined if detection fails.
  */
@@ -65,6 +65,11 @@ export async function fingerprint(
           .map((model) => model.owned_by)
           .filter((owner): owner is string => typeof owner === "string"),
       );
+
+      // Atlas is authoritative per entry and may appear in mixed catalogs.
+      if (ownedByValues.has("atlas")) {
+        return "atlas";
+      }
 
       // Only use ownership when every model reports the same string owner.
       if (allModelsHaveOwners && ownedByValues.size === 1) {
@@ -144,7 +149,7 @@ export async function fingerprint(
         // json parse failure — continue
       }
 
-      // ── Tier 3 — low confidence (suggest only, return undefined) ───
+      // ── Tier 3 — low confidence (return undefined silently) ───────
       if (combinedSignal.aborted) return undefined;
 
       // Step 3: GET / → Ollama banner

@@ -52,6 +52,8 @@ export interface OpenAIModelEntry {
 export interface ProbeContext {
   /** Pre-fetched /v1/models entries, for probes that need them */
   modelsResponse?: OpenAIModelEntry[];
+  /** Whether discovery selected the probe automatically or explicitly. */
+  probeSelection?: "auto" | "explicit";
   /** Config-hook cancellation signal for probes with external I/O. */
   signal?: AbortSignal;
 }

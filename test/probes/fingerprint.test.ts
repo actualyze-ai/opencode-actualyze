@@ -74,6 +74,18 @@ describe("fingerprint", () => {
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
+  it("should detect Atlas in a mixed catalog without Tier 2 requests", async () => {
+    const models = [
+      makeModel({ id: "atlas-model", owned_by: "atlas" }),
+      makeModel({ id: "foreign-model", owned_by: "vllm" }),
+    ];
+
+    await expect(
+      fingerprint("https://atlas.test/openai", undefined, models),
+    ).resolves.toBe("atlas");
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
   it("should detect vllm from owned_by", async () => {
     const models = [makeModel({ owned_by: "vllm" })];
     const result = await fingerprint(
@@ -203,16 +215,38 @@ describe("fingerprint", () => {
     expect(result).toBeUndefined();
   });
 
-  it("should treat a missing owner among Atlas models as inconclusive", async () => {
+  it("should detect Atlas when another model has no owner", async () => {
     const models = [
       makeModel({ id: "model-a", owned_by: "atlas" }),
       makeModel({ id: "model-b", owned_by: undefined }),
     ];
-    mockAllEndpoints404();
-
     const result = await fingerprint("https://atlas.test", undefined, models);
 
-    expect(result).toBeUndefined();
+    expect(result).toBe("atlas");
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("should require exact Atlas owner case and whitespace", async () => {
+    mockAllEndpoints404();
+
+    for (const ownedBy of ["Atlas", " atlas", "atlas ", "ATLAS"]) {
+      const result = await fingerprint("https://atlas.test", undefined, [
+        makeModel({ owned_by: ownedBy }),
+      ]);
+      expect(result).toBeUndefined();
+    }
+  });
+
+  it("should prefer Atlas over llama.cpp fields on a foreign entry", async () => {
+    const models = [
+      makeModel({ id: "atlas-model", owned_by: "atlas" }),
+      makeModel({ id: "foreign-model", owned_by: "foreign", tags: ["tag"] }),
+    ];
+
+    await expect(
+      fingerprint("https://atlas.test", undefined, models),
+    ).resolves.toBe("atlas");
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 
   it("should not resolve prototype-key owners through inherited properties", async () => {

@@ -181,8 +181,9 @@ Key rules:
 - LLM model type → `modalities: { input: ["text"], output: ["text"] }`
 - Capability flags (`tool_call`, `reasoning`, `temperature`) are only set if
   the model doesn't already have them
-- Capability flags are only ever set to `true`, never `false` — unknown is
-  better than wrong
+- Capability flags are never emitted as `false`. An authoritative probe may
+  report `false` internally to block conflicting fallback metadata; unknown
+  values remain eligible for fallback.
 
 ### Server Auto-Detection
 
@@ -192,7 +193,9 @@ When `"probe": "auto"` is configured, the `fingerprint()` function in
 ```mermaid
 flowchart TD
     A["Start fingerprinting"] --> B["Tier 1: Inspect modelsResponse"]
-    B --> B1{"Single owned_by<br/>in OWNED_BY_MAP?"}
+    B --> BA{"Any exact atlas<br/>owner?"}
+    BA -->|Yes| RA["atlas"]
+    BA -->|No| B1{"Unanimous owned_by<br/>in OWNED_BY_MAP?"}
     B1 -->|Yes| R2["Matched server"]
     B1 -->|No| B2{"Non-standard fields?<br/>aliases, tags, status"}
     B2 -->|Yes| R1["llamacpp"]
@@ -203,7 +206,7 @@ flowchart TD
     C2 -->|Yes| R4["lmstudio"]
     C2 -->|No| D["Tier 3: Low confidence"]
     D --> D1{"GET / or /api/tags<br/>looks like Ollama?"}
-    D1 -->|Yes| R5["Log suggestion,<br/>return undefined"]
+    D1 -->|Yes| R5["return undefined"]
     D1 -->|No| R6["return undefined"]
 
     style B fill:#d4edda
@@ -213,7 +216,11 @@ flowchart TD
 
 **Tier 1 -- modelsResponse inspection** (free, no HTTP):
 
-- Checks `owned_by` against `OWNED_BY_MAP` (omlx, vllm, sglang, llamacpp, koboldcpp, library→ollama)
+- An exact `owned_by: "atlas"` on any valid entry selects Atlas, including in a
+  mixed catalog. Auto-selected Atlas probing requests details only for that
+  Atlas-owned subset.
+- Other recognized owners must be unanimous across the catalog (`omlx`, `vllm`,
+  `sglang`, `llamacpp`, `koboldcpp`, `library` → `ollama`).
 - If `owned_by` is unknown or mixed, checks for non-standard fields (`aliases`, `tags`, `status`) that indicate llama.cpp
 
 **Tier 2 -- endpoint probes** (sequential HTTP, 2s global timeout):
@@ -221,14 +228,16 @@ flowchart TD
 - `GET /info` with a `router` field → TGI
 - `GET /api/v1/models` with `key` + `type` fields → LM Studio
 
-**Tier 3 -- low confidence** (suggestion only):
+**Tier 3 -- low confidence** (returns `undefined` silently):
 
-- `GET /` containing "Ollama is running" or `/api/tags` responding with model list → logs a suggestion to set `"probe": "ollama"` explicitly, returns `undefined`
+- `GET /` containing "Ollama is running" or `/api/tags` responding with a
+  model list returns `undefined` silently.
 
 Once detected, `PROBE_MAP` maps the server to its probe implementation:
 
 | Detected Server | Probe Used |
 | --------------- | ---------- |
+| atlas           | atlas      |
 | ollama          | ollama     |
 | llamacpp        | ollama     |
 | omlx            | omlx       |
@@ -260,6 +269,10 @@ type ProviderProbe = (
 interface ProbeContext {
   /** Pre-fetched /v1/models entries, for probes that need them */
   modelsResponse?: OpenAIModelEntry[];
+  /** Whether discovery selected the probe automatically or explicitly */
+  probeSelection?: "auto" | "explicit";
+  /** Config-hook cancellation signal for probes with external I/O */
+  signal?: AbortSignal;
 }
 
 interface ProbeResult {
@@ -285,8 +298,9 @@ Probes must follow these rules:
    on failure.
 4. **Never write to stdout/stderr** (no `console.*`). Probes run in opencode's
    config hook at startup; any output leaks into opencode. Fail silently.
-5. **Only set capability flags to `true`** — don't set `false` for unknown
-   capabilities (leave them undefined).
+5. **Leave unknown capabilities undefined.** Return `false` only when the
+   provider reports an authoritative boolean; discovery uses it to block a
+   conflicting fallback and removes the internal sentinel before config merge.
 
 ### Step-by-Step
 

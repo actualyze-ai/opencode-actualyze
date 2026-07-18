@@ -109,8 +109,16 @@ export const probeAtlas: ProviderProbe = async (
     const signal = context?.signal;
     if (signal?.aborted) return EMPTY_RESULT;
 
+    const eligibleModels =
+      context?.probeSelection === "auto"
+        ? listedModels.filter((model) => model?.owned_by === "atlas")
+        : listedModels;
+    if (eligibleModels.length === 0) return EMPTY_RESULT;
+
     const modelIds = [
-      ...new Set(listedModels.map((model) => model?.id).filter(isSafeModelId)),
+      ...new Set(
+        eligibleModels.map((model) => model?.id).filter(isSafeModelId),
+      ),
     ];
     if (modelIds.length === 0) return EMPTY_RESULT;
 

@@ -337,9 +337,14 @@ export async function discoverModels(
           discoveredModels[model.id] = entry;
         }
 
-        // Resolve probe (supports explicit names, "auto", or undefined)
         const probeType = options?.probe as string | undefined;
-        const context: ProbeContext = { modelsResponse: openaiModels, signal };
+        const probeSelection = probeType === "auto" ? "auto" : "explicit";
+        const context: ProbeContext = {
+          modelsResponse: openaiModels,
+          probeSelection,
+          signal,
+        };
+        // Resolve probe (supports explicit names, "auto", or undefined)
         const { probe, detectedServer } = await resolveProbe(
           probeType,
           baseURL,
