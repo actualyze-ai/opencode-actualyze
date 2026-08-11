@@ -8,3 +8,6 @@ opencode-debug.log
 .cache/
 coverage/
 
+
+# Local perception MCP state
+.perception-state/
