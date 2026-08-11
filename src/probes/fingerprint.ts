@@ -27,7 +27,7 @@ export const PROBE_MAP: Record<DetectedServer, ProbeKey> = {
 
 /** owned_by values that uniquely identify a server. */
 const OWNED_BY_MAP: Record<string, DetectedServer> = {
-  atlas: "actualyze", // wire identity the Actualyze gateway reports
+  actualyze: "actualyze",
   omlx: "omlx",
   vllm: "vllm",
   sglang: "sglang",
@@ -66,8 +66,8 @@ export async function fingerprint(
           .filter((owner): owner is string => typeof owner === "string"),
       );
 
-      // Actualyze (wire value `owned_by: "atlas"`) is authoritative per entry and may appear in mixed catalogs.
-      if (ownedByValues.has("atlas")) {
+      // Actualyze is authoritative per entry and may appear in mixed catalogs.
+      if (ownedByValues.has("actualyze")) {
         return "actualyze";
       }
 

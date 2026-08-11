@@ -64,7 +64,7 @@ describe("fingerprint", () => {
   });
 
   it("should detect Actualyze from owned_by", async () => {
-    const models = [makeModel({ owned_by: "atlas" })];
+    const models = [makeModel({ owned_by: "actualyze" })];
     const result = await fingerprint(
       "https://actualyze.test/openai",
       undefined,
@@ -76,7 +76,7 @@ describe("fingerprint", () => {
 
   it("should detect Actualyze in a mixed catalog without Tier 2 requests", async () => {
     const models = [
-      makeModel({ id: "actualyze-model", owned_by: "atlas" }),
+      makeModel({ id: "actualyze-model", owned_by: "actualyze" }),
       makeModel({ id: "foreign-model", owned_by: "vllm" }),
     ];
 
@@ -217,7 +217,7 @@ describe("fingerprint", () => {
 
   it("should detect Actualyze when another model has no owner", async () => {
     const models = [
-      makeModel({ id: "model-a", owned_by: "atlas" }),
+      makeModel({ id: "model-a", owned_by: "actualyze" }),
       makeModel({ id: "model-b", owned_by: undefined }),
     ];
     const result = await fingerprint(
@@ -233,7 +233,12 @@ describe("fingerprint", () => {
   it("should require exact Actualyze owner case and whitespace", async () => {
     mockAllEndpoints404();
 
-    for (const ownedBy of ["Atlas", " atlas", "atlas ", "ATLAS"]) {
+    for (const ownedBy of [
+      "Actualyze",
+      " actualyze",
+      "actualyze ",
+      "ACTUALYZE",
+    ]) {
       const result = await fingerprint("https://actualyze.test", undefined, [
         makeModel({ owned_by: ownedBy }),
       ]);
@@ -243,7 +248,7 @@ describe("fingerprint", () => {
 
   it("should prefer Actualyze over llama.cpp fields on a foreign entry", async () => {
     const models = [
-      makeModel({ id: "actualyze-model", owned_by: "atlas" }),
+      makeModel({ id: "actualyze-model", owned_by: "actualyze" }),
       makeModel({ id: "foreign-model", owned_by: "foreign", tags: ["tag"] }),
     ];
 

@@ -19,7 +19,7 @@
 ## Server Quirks
 
 - `owned_by` is optional (`owned_by?: string`). Some servers omit it entirely. Missing is not a positive signal for any server.
-- Actualyze is the Tier 1 mixed-catalog exception: any exact `owned_by: "atlas"`
+- Actualyze is the Tier 1 mixed-catalog exception: any exact `owned_by: "actualyze"`
   selects Actualyze. Auto mode details only that owner subset; explicit Actualyze mode
   retains all-safe-ID behavior. Keep the fingerprint and probe predicates
   identical and case-sensitive.

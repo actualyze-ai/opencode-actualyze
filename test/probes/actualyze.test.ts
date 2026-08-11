@@ -7,7 +7,7 @@ function listedModel(id: string): OpenAIModelEntry {
     id,
     object: "model",
     created: 1_700_000_000,
-    owned_by: "atlas",
+    owned_by: "actualyze",
   };
 }
 
@@ -26,7 +26,7 @@ function detail(
     id,
     object: "model",
     created: 1_700_000_000,
-    owned_by: "atlas",
+    owned_by: "actualyze",
     context_window: 131_072,
     max_output_tokens: 16_384,
     capabilities: {
@@ -67,7 +67,7 @@ describe("probeActualyze", () => {
           listedModel(encodedId),
           listedModelWithOwner("foreign", "vllm"),
           listedModelWithOwner("ownerless", undefined),
-          listedModelWithOwner("Atlas-case", "Atlas"),
+          listedModelWithOwner("Actualyze-case", "Actualyze"),
           listedModel("."),
         ],
       },
@@ -90,7 +90,7 @@ describe("probeActualyze", () => {
         modelsResponse: [
           listedModelWithOwner("foreign", "vllm"),
           listedModelWithOwner("ownerless", undefined),
-          listedModelWithOwner("padded", "atlas "),
+          listedModelWithOwner("padded", "actualyze "),
         ],
       },
     );

@@ -193,7 +193,7 @@ When `"probe": "auto"` is configured, the `fingerprint()` function in
 ```mermaid
 flowchart TD
     A["Start fingerprinting"] --> B["Tier 1: Inspect modelsResponse"]
-    B --> BA{"Any exact atlas<br/>owner?"}
+    B --> BA{"Any exact actualyze<br/>owner?"}
     BA -->|Yes| RA["actualyze"]
     BA -->|No| B1{"Unanimous owned_by<br/>in OWNED_BY_MAP?"}
     B1 -->|Yes| R2["Matched server"]
@@ -216,7 +216,7 @@ flowchart TD
 
 **Tier 1 -- modelsResponse inspection** (free, no HTTP):
 
-- An exact `owned_by: "atlas"` on any valid entry selects Actualyze, including in a
+- An exact `owned_by: "actualyze"` on any valid entry selects Actualyze, including in a
   mixed catalog. Auto-selected Actualyze probing requests details only for that
   Actualyze-owned subset.
 - Other recognized owners must be unanimous across the catalog (`omlx`, `vllm`,

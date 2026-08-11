@@ -51,14 +51,12 @@ function isActualyzeDetail(
 ): value is ActualyzeModelDetail {
   if (!isRecord(value) || !isRecord(value.capabilities)) return false;
 
-  // "atlas" is the fixed gateway-identity string the Actualyze server
-  // reports in owned_by — it is wire protocol, not branding.
   return (
     value.id === expectedId &&
     value.object === "model" &&
     typeof value.created === "number" &&
     Number.isFinite(value.created) &&
-    value.owned_by === "atlas"
+    value.owned_by === "actualyze"
   );
 }
 
@@ -113,7 +111,7 @@ export const probeActualyze: ProviderProbe = async (
 
     const eligibleModels =
       context?.probeSelection === "auto"
-        ? listedModels.filter((model) => model?.owned_by === "atlas")
+        ? listedModels.filter((model) => model?.owned_by === "actualyze")
         : listedModels;
     if (eligibleModels.length === 0) return EMPTY_RESULT;
 

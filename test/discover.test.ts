@@ -120,7 +120,7 @@ describe("discoverModels", () => {
         return {
           ok: true,
           json: async () => ({
-            data: ids.map((id) => ({ id, owned_by: "atlas" })),
+            data: ids.map((id) => ({ id, owned_by: "actualyze" })),
           }),
         };
       }
@@ -131,7 +131,7 @@ describe("discoverModels", () => {
           id,
           object: "model",
           created: 1_700_000_000,
-          owned_by: "atlas",
+          owned_by: "actualyze",
           context_window: 4096,
           max_output_tokens: 1024,
           capabilities: {
@@ -628,7 +628,7 @@ describe("discoverModels", () => {
                 id,
                 object: "model",
                 created: 1_700_000_000,
-                owned_by: "atlas",
+                owned_by: "actualyze",
               },
             ],
           }),
@@ -641,7 +641,7 @@ describe("discoverModels", () => {
             id,
             object: "model",
             created: 1_700_000_000,
-            owned_by: "atlas",
+            owned_by: "actualyze",
             context_window: 131_072,
             max_output_tokens: 16_384,
             capabilities: {
@@ -706,13 +706,33 @@ describe("discoverModels", () => {
                 id: actualyzeId,
                 object: "model",
                 created: 1,
-                owned_by: "atlas",
+                owned_by: "actualyze",
               },
               { id: foreignId, object: "model", created: 1, owned_by: "vllm" },
-              { id: falseId, object: "model", created: 1, owned_by: "atlas" },
-              { id: failedId, object: "model", created: 1, owned_by: "atlas" },
-              { id: limitedId, object: "model", created: 1, owned_by: "atlas" },
-              { id: spoofedId, object: "model", created: 1, owned_by: "atlas" },
+              {
+                id: falseId,
+                object: "model",
+                created: 1,
+                owned_by: "actualyze",
+              },
+              {
+                id: failedId,
+                object: "model",
+                created: 1,
+                owned_by: "actualyze",
+              },
+              {
+                id: limitedId,
+                object: "model",
+                created: 1,
+                owned_by: "actualyze",
+              },
+              {
+                id: spoofedId,
+                object: "model",
+                created: 1,
+                owned_by: "actualyze",
+              },
             ],
           }),
         };
@@ -729,7 +749,7 @@ describe("discoverModels", () => {
             id: "different-model",
             object: "model",
             created: 1,
-            owned_by: "atlas",
+            owned_by: "actualyze",
             capabilities: {},
           }),
         };
@@ -754,7 +774,7 @@ describe("discoverModels", () => {
           id,
           object: "model",
           created: 1,
-          owned_by: "atlas",
+          owned_by: "actualyze",
           context_window: 131_072,
           max_output_tokens: 16_384,
           capabilities,
@@ -849,7 +869,7 @@ describe("discoverModels", () => {
         return {
           ok: true,
           json: async () => ({
-            data: [{ id: "spoofed", owned_by: "atlas" }],
+            data: [{ id: "spoofed", owned_by: "actualyze" }],
           }),
         };
       }
@@ -859,7 +879,7 @@ describe("discoverModels", () => {
           id: "different-model",
           object: "model",
           created: 1,
-          owned_by: "atlas",
+          owned_by: "actualyze",
           capabilities: {},
         }),
       };
@@ -911,7 +931,7 @@ describe("discoverModels", () => {
             id,
             object: "model",
             created: 1,
-            owned_by: "atlas",
+            owned_by: "actualyze",
             context_window: 4096,
             max_output_tokens: 1024,
             capabilities: {
@@ -973,7 +993,7 @@ describe("discoverModels", () => {
                 id,
                 object: "model",
                 created: 1_700_000_000,
-                owned_by: "atlas",
+                owned_by: "actualyze",
               },
             ],
           }),
@@ -985,7 +1005,7 @@ describe("discoverModels", () => {
           id,
           object: "model",
           created: 1_700_000_000,
-          owned_by: "atlas",
+          owned_by: "actualyze",
           context_window: null,
           max_output_tokens: null,
           capabilities: {
@@ -1057,7 +1077,7 @@ describe("discoverModels", () => {
                 id,
                 object: "model",
                 created: 1_700_000_000,
-                owned_by: "atlas",
+                owned_by: "actualyze",
               },
             ],
           }),
@@ -1069,7 +1089,7 @@ describe("discoverModels", () => {
           id,
           object: "model",
           created: 1_700_000_000,
-          owned_by: "atlas",
+          owned_by: "actualyze",
           context_window: null,
           max_output_tokens: null,
           capabilities: {
@@ -1136,7 +1156,7 @@ describe("discoverModels", () => {
                 id,
                 object: "model",
                 created: 1_700_000_000,
-                owned_by: "atlas",
+                owned_by: "actualyze",
               },
             ],
           }),
@@ -1149,7 +1169,7 @@ describe("discoverModels", () => {
             id,
             object: "model",
             created: 1_700_000_000,
-            owned_by: "atlas",
+            owned_by: "actualyze",
             context_window: null,
             max_output_tokens: null,
             capabilities: {
