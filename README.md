@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 The first-party [opencode](https://github.com/opencode-ai/opencode) plugin
-for [Actualyze](https://actualyze.dev): point it at your Actualyze server with
+for [Actualyze](https://actualyze.ai): point it at your Actualyze server with
 a personal access token and opencode's model picker fills with exactly the
 models your token can invoke — correct context windows, output limits, and
 capability flags, with zero manual model configuration.
