@@ -406,7 +406,7 @@ them, but `qwen3:30b` keeps your custom name and limits untouched.
 
 ## License
 
-MIT. Based on [opencode-model-scout](https://github.com/rmk40/opencode-model-scout).
+MIT. Based on [opencode-lmstudio](https://github.com/agustif/opencode-lmstudio).
 
 ## Contributing
 
