@@ -1,39 +1,51 @@
 # opencode-actualyze
 
-[![npm version](https://img.shields.io/npm/v/opencode-actualyze)](https://www.npmjs.com/package/opencode-actualyze)
-[![CI](https://github.com/actualyze-ai/opencode-actualyze/actions/workflows/release.yml/badge.svg)](https://github.com/actualyze-ai/opencode-actualyze/actions/workflows/release.yml)
+[![CI](https://github.com/actualyze-ai/opencode-actualyze/actions/workflows/ci.yml/badge.svg)](https://github.com/actualyze-ai/opencode-actualyze/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-An [opencode](https://github.com/opencode-ai/opencode) plugin that
-auto-discovers models from OpenAI-compatible providers and enriches them with
-context window sizes, capability flags, and model metadata. Supports Actualyze,
-Ollama, oMLX, vLLM, TGI, SGLang, LM Studio, KoboldCpp, llama.cpp, and LocalAI.
+The first-party [opencode](https://github.com/opencode-ai/opencode) plugin
+for [Actualyze](https://actualyze.dev): point it at your Actualyze server with
+a personal access token and opencode's model picker fills with exactly the
+models your token can invoke — correct context windows, output limits, and
+capability flags, with zero manual model configuration.
+
+It also auto-discovers and enriches models from any OpenAI-compatible
+provider: Ollama, oMLX, vLLM, TGI, SGLang, LM Studio, KoboldCpp, llama.cpp,
+and LocalAI.
 
 ## Quick Start
 
 ```bash
-opencode plugin opencode-actualyze
+opencode plugin github:actualyze-ai/opencode-actualyze
 ```
 
-Then add `"probe": "auto"` to any provider in your `opencode.json`:
+Then add an Actualyze provider to your `opencode.json`. Two details matter:
+the OpenAI-compatible surface lives under the `/openai/v1` path, and your
+personal access token (PAT) goes in `apiKey`:
 
 ```json
 {
   "provider": {
-    "ollama": {
+    "actualyze": {
       "npm": "@ai-sdk/openai-compatible",
       "options": {
-        "baseURL": "http://localhost:11434/v1",
-        "probe": "auto"
+        "baseURL": "https://your-actualyze-host/openai/v1",
+        "apiKey": "<your PAT>",
+        "probe": "actualyze"
       }
     }
   }
 }
 ```
 
-Restart opencode. Every model on that provider now has accurate context window
+Restart opencode. The model picker now lists exactly the models your PAT can
+invoke — workspace- and team-scoped — each with accurate context window
 sizes, output limits, and capability flags (tool calling, vision, reasoning)
 discovered automatically.
+
+Running a local inference server instead? The same plugin discovers and
+enriches any OpenAI-compatible provider — add `"probe": "auto"` to it and see
+[Configuration](#configuration).
 
 ## The Problem
 
@@ -84,13 +96,9 @@ priority over models.dev guesses.
 It reads the package manifest and registers the plugin in **both**
 `opencode.json` (the server plugin that runs model discovery) **and**
 `tui.json` (the TUI plugin that provides the `/actualyze` dialog) for you. The
-spec it accepts can be an npm name, a `github:` reference, or a local
-`file://` path:
+spec it accepts can be a `github:` reference or a local `file://` path:
 
 ```bash
-# From npm
-opencode plugin opencode-actualyze
-
 # From GitHub
 opencode plugin github:actualyze-ai/opencode-actualyze
 
@@ -111,14 +119,14 @@ After installation, add provider configuration with the `probe` field — see
 ### Manual configuration
 
 If you prefer to edit config by hand (or install the package yourself), add the
-plugin to **both** files. Use the same spec in each — an npm name, a `github:`
-reference, or a `file://` path:
+plugin to **both** files. Use the same spec in each — a `github:` reference
+or a `file://` path:
 
 `~/.config/opencode/opencode.json` (server — model discovery):
 
 ```json
 {
-  "plugin": ["opencode-actualyze"]
+  "plugin": ["github:actualyze-ai/opencode-actualyze"]
 }
 ```
 
@@ -127,14 +135,8 @@ reference, or a `file://` path:
 ```json
 {
   "$schema": "https://opencode.ai/tui.json",
-  "plugin": ["opencode-actualyze"]
+  "plugin": ["github:actualyze-ai/opencode-actualyze"]
 }
-```
-
-To install the package itself from npm before referencing it:
-
-```bash
-npm install opencode-actualyze
 ```
 
 For a local checkout, clone and build first, then reference the directory with a
@@ -185,6 +187,14 @@ detect the server type automatically:
 ```json
 {
   "provider": {
+    "actualyze": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "https://your-actualyze-host/openai/v1",
+        "apiKey": "<your PAT>",
+        "probe": "actualyze"
+      }
+    },
     "omlx": {
       "npm": "@ai-sdk/openai-compatible",
       "options": {
