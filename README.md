@@ -222,14 +222,22 @@ detect the server type automatically:
 ```
 
 When `"probe": "auto"` is set, the plugin fingerprints the server using a
-tiered detection strategy (see [Supported Servers](#supported-servers)) and
-selects the appropriate probe automatically. If detection fails, the provider
+tiered detection strategy and selects the appropriate probe automatically. If detection fails, the provider
 still gets discovery + models.dev fallback enrichment.
 
 Actualyze can also be selected explicitly with `"probe": "actualyze"`. In auto
 mode, the plugin recognizes Actualyze-served entries in the `/v1/models`
-response automatically, even in mixed catalogs. Other recognized owners still
-require unanimous ownership.
+response automatically, even in mixed catalogs.
+
+The Actualyze probe reuses the `/v1/models` response, then fetches encoded
+`/v1/models/{id}` detail endpoints with a bounded worker pool. Requests inherit
+the config-hook abort signal, and one failed model does not discard metadata
+from the others. The probe is tested against a live Actualyze endpoint.
+
+Actualyze reports capability booleans authoritatively. A reported `false` blocks
+a models.dev fallback from enabling that capability, but the final opencode
+config still omits false flags. Missing, malformed, or otherwise unknown values
+remain eligible for fallback enrichment.
 
 ### Multiple Providers
 
@@ -267,57 +275,6 @@ probed and unprobed providers freely:
 In this example, oMLX and Ollama get full probe enrichment. LM Studio gets
 discovery + models.dev fallback. You could also use `"probe": "auto"` on any
 of these to let the plugin detect the server type automatically.
-
-## Supported Servers
-
-| Server        | Probe       | Status   | What It Extracts                                                        |
-| ------------- | ----------- | -------- | ----------------------------------------------------------------------- |
-| **Actualyze** | `actualyze` | Tested   | Context, output limit, vision, tools, reasoning from thinking signals   |
-| **oMLX**      | `omlx`      | Tested   | Context, output limit, model type, load state, size                     |
-| **Ollama**    | `ollama`    | Tested   | Context, tools, vision, thinking, family, quantization                  |
-| **llama.cpp** | `ollama`    | Expected | Partial Ollama metadata (API compat unverified against live instance)   |
-| **LocalAI**   | `ollama`    | Expected | Partial Ollama metadata (API compat unverified against live instance)   |
-| **LM Studio** | `lmstudio`  | Untested | Context, vision, tool use, architecture, quantization, size, load state |
-| **TGI**       | `tgi`       | Untested | Context, output limit                                                   |
-| **SGLang**    | `sglang`    | Untested | Context, model type, vision                                             |
-| **vLLM**      | `vllm`      | Untested | Context                                                                 |
-| **KoboldCpp** | `koboldcpp` | Untested | Context, vision                                                         |
-
-### Support Tiers
-
-- **Tested** -- verified against a live instance
-- **Expected** -- API-compatible based on server source code review; not yet tested against a live instance
-- **Untested** -- probe implemented based on API documentation; needs community verification
-
-The Actualyze probe reuses the `/v1/models` response, then fetches encoded
-`/v1/models/{id}` detail endpoints with a bounded worker pool. Requests inherit
-the config-hook abort signal, and one failed model does not discard metadata
-from the others. Auto-selected probes request details only for Actualyze-owned
-entries in a mixed catalog; an explicit `"probe": "actualyze"` remains an
-all-model manual override. Foreign-owner entries remain discovered and use the
-normal models.dev fallback. The probe is tested against a live Actualyze endpoint.
-
-### models.dev Fallback
-
-When no probe is configured (or for capability gaps that probes don't cover),
-the plugin matches discovered model IDs against opencode's built-in
-[models.dev](https://models.dev) database using a 3-tier matching strategy:
-
-1. **Exact normalized match** — `qwen3-30b-a3b` matches directly
-2. **Family + size match** — `qwen3:0.6b` → family "qwen" + size "0.6b" →
-   matches a qwen model with the same parameter count
-3. **Family-only match** — `qwen3:14b` → family "qwen" → inherits
-   capabilities from any known qwen model
-
-The fallback only applies **capability flags** (`tool_call`, `reasoning`,
-`attachment`, `temperature`, `modalities`, `family`). It does **not** apply
-context or output limits — those vary too much across quantization levels and
-providers to be guessed reliably.
-
-Actualyze reports capability booleans authoritatively. A reported `false` blocks a
-models.dev fallback from enabling that capability, but the final opencode config
-still omits false flags. Missing, malformed, or otherwise unknown values remain
-eligible for fallback enrichment.
 
 ## `/actualyze` Command
 
