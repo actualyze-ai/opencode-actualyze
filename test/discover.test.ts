@@ -98,7 +98,7 @@ describe("discoverModels", () => {
       provider: {
         generic: {
           npm: "@ai-sdk/openai-compatible",
-          options: { baseURL: "https://atlas.test/v1" },
+          options: { baseURL: "https://actualyze.test/v1" },
         },
       },
     };
@@ -113,14 +113,14 @@ describe("discoverModels", () => {
     expect(Object.keys(models)).toEqual(["valid-model"]);
   });
 
-  it("supports reserved property names as literal discovered Atlas model IDs", async () => {
+  it("supports reserved property names as literal discovered Actualyze model IDs", async () => {
     const ids = ["constructor", "__proto__"];
     mockFetch.mockImplementation(async (url: string) => {
       if (url.endsWith("/v1/models")) {
         return {
           ok: true,
           json: async () => ({
-            data: ids.map((id) => ({ id, owned_by: "atlas" })),
+            data: ids.map((id) => ({ id, owned_by: "actualyze" })),
           }),
         };
       }
@@ -131,7 +131,7 @@ describe("discoverModels", () => {
           id,
           object: "model",
           created: 1_700_000_000,
-          owned_by: "atlas",
+          owned_by: "actualyze",
           context_window: 4096,
           max_output_tokens: 1024,
           capabilities: {
@@ -145,10 +145,10 @@ describe("discoverModels", () => {
     });
     const config: Record<string, unknown> = {
       provider: {
-        atlas: {
+        actualyze: {
           npm: "@ai-sdk/openai-compatible",
           options: {
-            baseURL: "https://atlas.test/v1",
+            baseURL: "https://actualyze.test/v1",
             probe: "auto",
           },
         },
@@ -161,7 +161,7 @@ describe("discoverModels", () => {
       string,
       Record<string, unknown>
     >;
-    const models = providers.atlas.models as Record<
+    const models = providers.actualyze.models as Record<
       string,
       Record<string, unknown>
     >;
@@ -615,8 +615,8 @@ describe("discoverModels", () => {
     expect(model.limit).toEqual({ context: 8192 });
   });
 
-  it("should auto-detect Atlas and enrich discovered model capabilities", async () => {
-    const id = "atlas/model:latest";
+  it("should auto-detect Actualyze and enrich discovered model capabilities", async () => {
+    const id = "actualyze/model:latest";
     mockFetch.mockImplementation(async (url: string) => {
       if (url.endsWith("/v1/models")) {
         return {
@@ -628,20 +628,20 @@ describe("discoverModels", () => {
                 id,
                 object: "model",
                 created: 1_700_000_000,
-                owned_by: "atlas",
+                owned_by: "actualyze",
               },
             ],
           }),
         };
       }
-      if (url.endsWith("/v1/models/atlas%2Fmodel%3Alatest")) {
+      if (url.endsWith("/v1/models/actualyze%2Fmodel%3Alatest")) {
         return {
           ok: true,
           json: async () => ({
             id,
             object: "model",
             created: 1_700_000_000,
-            owned_by: "atlas",
+            owned_by: "actualyze",
             context_window: 131_072,
             max_output_tokens: 16_384,
             capabilities: {
@@ -658,10 +658,10 @@ describe("discoverModels", () => {
 
     const config: Record<string, unknown> = {
       provider: {
-        atlas: {
+        actualyze: {
           npm: "@ai-sdk/openai-compatible",
           options: {
-            baseURL: "https://atlas.test/openai/v1",
+            baseURL: "https://actualyze.test/openai/v1",
             probe: "auto",
           },
         },
@@ -674,7 +674,7 @@ describe("discoverModels", () => {
       string,
       Record<string, unknown>
     >;
-    const models = providers.atlas.models as Record<
+    const models = providers.actualyze.models as Record<
       string,
       Record<string, unknown>
     >;
@@ -687,13 +687,13 @@ describe("discoverModels", () => {
     });
   });
 
-  it("should auto-detect a mixed Atlas catalog and probe only Atlas-owned entries", async () => {
-    const atlasId = "atlas/model:latest";
+  it("should auto-detect a mixed Actualyze catalog and probe only Actualyze-owned entries", async () => {
+    const actualyzeId = "actualyze/model:latest";
     const foreignId = "foreign-model";
-    const falseId = "atlas-disabled";
-    const failedId = "atlas-failed";
-    const limitedId = "atlas-limited";
-    const spoofedId = "atlas-spoofed";
+    const falseId = "actualyze-disabled";
+    const failedId = "actualyze-failed";
+    const limitedId = "actualyze-limited";
+    const spoofedId = "actualyze-spoofed";
     const detailUrls: string[] = [];
     mockFetch.mockImplementation(async (url: string) => {
       if (url.endsWith("/v1/models")) {
@@ -702,12 +702,37 @@ describe("discoverModels", () => {
           json: async () => ({
             object: "list",
             data: [
-              { id: atlasId, object: "model", created: 1, owned_by: "atlas" },
+              {
+                id: actualyzeId,
+                object: "model",
+                created: 1,
+                owned_by: "actualyze",
+              },
               { id: foreignId, object: "model", created: 1, owned_by: "vllm" },
-              { id: falseId, object: "model", created: 1, owned_by: "atlas" },
-              { id: failedId, object: "model", created: 1, owned_by: "atlas" },
-              { id: limitedId, object: "model", created: 1, owned_by: "atlas" },
-              { id: spoofedId, object: "model", created: 1, owned_by: "atlas" },
+              {
+                id: falseId,
+                object: "model",
+                created: 1,
+                owned_by: "actualyze",
+              },
+              {
+                id: failedId,
+                object: "model",
+                created: 1,
+                owned_by: "actualyze",
+              },
+              {
+                id: limitedId,
+                object: "model",
+                created: 1,
+                owned_by: "actualyze",
+              },
+              {
+                id: spoofedId,
+                object: "model",
+                created: 1,
+                owned_by: "actualyze",
+              },
             ],
           }),
         };
@@ -724,7 +749,7 @@ describe("discoverModels", () => {
             id: "different-model",
             object: "model",
             created: 1,
-            owned_by: "atlas",
+            owned_by: "actualyze",
             capabilities: {},
           }),
         };
@@ -749,7 +774,7 @@ describe("discoverModels", () => {
           id,
           object: "model",
           created: 1,
-          owned_by: "atlas",
+          owned_by: "actualyze",
           context_window: 131_072,
           max_output_tokens: 16_384,
           capabilities,
@@ -759,10 +784,10 @@ describe("discoverModels", () => {
 
     const config: Record<string, unknown> = {
       provider: {
-        atlas: {
+        actualyze: {
           npm: "@ai-sdk/openai-compatible",
           options: {
-            baseURL: "https://atlas.test/openai/v1",
+            baseURL: "https://actualyze.test/openai/v1",
             probe: "auto",
           },
         },
@@ -789,19 +814,19 @@ describe("discoverModels", () => {
       string,
       Record<string, unknown>
     >;
-    const models = providers.atlas.models as Record<
+    const models = providers.actualyze.models as Record<
       string,
       Record<string, unknown>
     >;
     expect(Object.keys(models)).toEqual([
-      atlasId,
+      actualyzeId,
       foreignId,
       falseId,
       failedId,
       limitedId,
       spoofedId,
     ]);
-    expect(models[atlasId]).toMatchObject({
+    expect(models[actualyzeId]).toMatchObject({
       limit: { context: 131_072, output: 16_384 },
       modalities: { input: ["text", "image"], output: ["text"] },
       attachment: true,
@@ -829,22 +854,22 @@ describe("discoverModels", () => {
 
     expect(detailUrls).toHaveLength(5);
     expect(detailUrls).toContain(
-      "https://atlas.test/openai/v1/models/atlas%2Fmodel%3Alatest",
+      "https://actualyze.test/openai/v1/models/actualyze%2Fmodel%3Alatest",
     );
     expect(detailUrls.some((url) => url.includes(foreignId))).toBe(false);
     expect(getDiscoveryStore()[0]).toMatchObject({
       probeType: "auto",
-      detectedServer: "atlas",
+      detectedServer: "actualyze",
     });
   });
 
-  it("should retain Atlas detection when every Atlas detail is invalid", async () => {
+  it("should retain Actualyze detection when every Actualyze detail is invalid", async () => {
     mockFetch.mockImplementation(async (url: string) => {
       if (url.endsWith("/v1/models")) {
         return {
           ok: true,
           json: async () => ({
-            data: [{ id: "spoofed", owned_by: "atlas" }],
+            data: [{ id: "spoofed", owned_by: "actualyze" }],
           }),
         };
       }
@@ -854,16 +879,16 @@ describe("discoverModels", () => {
           id: "different-model",
           object: "model",
           created: 1,
-          owned_by: "atlas",
+          owned_by: "actualyze",
           capabilities: {},
         }),
       };
     });
     const config: Record<string, unknown> = {
       provider: {
-        atlas: {
+        actualyze: {
           npm: "@ai-sdk/openai-compatible",
-          options: { baseURL: "https://atlas.test/v1", probe: "auto" },
+          options: { baseURL: "https://actualyze.test/v1", probe: "auto" },
         },
       },
     };
@@ -874,20 +899,20 @@ describe("discoverModels", () => {
       string,
       Record<string, unknown>
     >;
-    const models = providers.atlas.models as Record<
+    const models = providers.actualyze.models as Record<
       string,
       Record<string, unknown>
     >;
     expect(models.spoofed.limit).toBeUndefined();
-    expect(getDiscoveryStore()[0].detectedServer).toBe("atlas");
+    expect(getDiscoveryStore()[0].detectedServer).toBe("actualyze");
   });
 
-  it("should explicitly probe ownerless and foreign Atlas entries without detectedServer", async () => {
+  it("should explicitly probe ownerless and foreign Actualyze entries without detectedServer", async () => {
     const ownerlessId = "ownerless/model";
     const foreignId = "foreign-model";
     const detailUrls = [
-      "https://atlas.test/openai/v1/models/ownerless%2Fmodel",
-      "https://atlas.test/openai/v1/models/foreign-model",
+      "https://actualyze.test/openai/v1/models/ownerless%2Fmodel",
+      "https://actualyze.test/openai/v1/models/foreign-model",
     ];
     mockFetch.mockImplementation(async (url: string) => {
       if (url.endsWith("/v1/models")) {
@@ -906,7 +931,7 @@ describe("discoverModels", () => {
             id,
             object: "model",
             created: 1,
-            owned_by: "atlas",
+            owned_by: "actualyze",
             context_window: 4096,
             max_output_tokens: 1024,
             capabilities: {
@@ -922,11 +947,11 @@ describe("discoverModels", () => {
     });
     const config: Record<string, unknown> = {
       provider: {
-        atlas: {
+        actualyze: {
           npm: "@ai-sdk/openai-compatible",
           options: {
-            baseURL: "https://atlas.test/openai/v1",
-            probe: "atlas",
+            baseURL: "https://actualyze.test/openai/v1",
+            probe: "actualyze",
           },
         },
       },
@@ -941,7 +966,7 @@ describe("discoverModels", () => {
       string,
       Record<string, unknown>
     >;
-    const models = providers.atlas.models as Record<
+    const models = providers.actualyze.models as Record<
       string,
       Record<string, unknown>
     >;
@@ -951,11 +976,11 @@ describe("discoverModels", () => {
         tool_call: true,
       });
     }
-    expect(getDiscoveryStore()[0]).toMatchObject({ probeType: "atlas" });
+    expect(getDiscoveryStore()[0]).toMatchObject({ probeType: "actualyze" });
     expect(getDiscoveryStore()[0].detectedServer).toBeUndefined();
   });
 
-  it("should keep authoritative Atlas false capabilities ahead of models.dev", async () => {
+  it("should keep authoritative Actualyze false capabilities ahead of models.dev", async () => {
     const id = "all-capabilities-disabled";
     mockFetch.mockImplementation(async (url: string) => {
       if (url.endsWith("/v1/models")) {
@@ -968,7 +993,7 @@ describe("discoverModels", () => {
                 id,
                 object: "model",
                 created: 1_700_000_000,
-                owned_by: "atlas",
+                owned_by: "actualyze",
               },
             ],
           }),
@@ -980,7 +1005,7 @@ describe("discoverModels", () => {
           id,
           object: "model",
           created: 1_700_000_000,
-          owned_by: "atlas",
+          owned_by: "actualyze",
           context_window: null,
           max_output_tokens: null,
           capabilities: {
@@ -995,10 +1020,10 @@ describe("discoverModels", () => {
 
     const config: Record<string, unknown> = {
       provider: {
-        atlas: {
+        actualyze: {
           npm: "@ai-sdk/openai-compatible",
           options: {
-            baseURL: "https://atlas.test/openai/v1",
+            baseURL: "https://actualyze.test/openai/v1",
             probe: "auto",
           },
         },
@@ -1024,7 +1049,7 @@ describe("discoverModels", () => {
       string,
       Record<string, unknown>
     >;
-    const models = providers.atlas.models as Record<
+    const models = providers.actualyze.models as Record<
       string,
       Record<string, unknown>
     >;
@@ -1039,7 +1064,7 @@ describe("discoverModels", () => {
     ).toBe(false);
   });
 
-  it("should allow models.dev fallback for unknown Atlas capability values", async () => {
+  it("should allow models.dev fallback for unknown Actualyze capability values", async () => {
     const id = "unknown-capabilities";
     mockFetch.mockImplementation(async (url: string) => {
       if (url.endsWith("/v1/models")) {
@@ -1052,7 +1077,7 @@ describe("discoverModels", () => {
                 id,
                 object: "model",
                 created: 1_700_000_000,
-                owned_by: "atlas",
+                owned_by: "actualyze",
               },
             ],
           }),
@@ -1064,7 +1089,7 @@ describe("discoverModels", () => {
           id,
           object: "model",
           created: 1_700_000_000,
-          owned_by: "atlas",
+          owned_by: "actualyze",
           context_window: null,
           max_output_tokens: null,
           capabilities: {
@@ -1078,10 +1103,10 @@ describe("discoverModels", () => {
 
     const config: Record<string, unknown> = {
       provider: {
-        atlas: {
+        actualyze: {
           npm: "@ai-sdk/openai-compatible",
           options: {
-            baseURL: "https://atlas.test/openai/v1",
+            baseURL: "https://actualyze.test/openai/v1",
             probe: "auto",
           },
         },
@@ -1106,7 +1131,7 @@ describe("discoverModels", () => {
       string,
       Record<string, unknown>
     >;
-    const models = providers.atlas.models as Record<
+    const models = providers.actualyze.models as Record<
       string,
       Record<string, unknown>
     >;
@@ -1118,7 +1143,7 @@ describe("discoverModels", () => {
     });
   });
 
-  it("should map adaptive-only Atlas reasoning without enabling false capabilities", async () => {
+  it("should map adaptive-only Actualyze reasoning without enabling false capabilities", async () => {
     const id = "adaptive-model";
     mockFetch.mockImplementation(async (url: string) => {
       if (url.endsWith("/v1/models")) {
@@ -1131,7 +1156,7 @@ describe("discoverModels", () => {
                 id,
                 object: "model",
                 created: 1_700_000_000,
-                owned_by: "atlas",
+                owned_by: "actualyze",
               },
             ],
           }),
@@ -1144,7 +1169,7 @@ describe("discoverModels", () => {
             id,
             object: "model",
             created: 1_700_000_000,
-            owned_by: "atlas",
+            owned_by: "actualyze",
             context_window: null,
             max_output_tokens: null,
             capabilities: {
@@ -1161,10 +1186,10 @@ describe("discoverModels", () => {
 
     const config: Record<string, unknown> = {
       provider: {
-        atlas: {
+        actualyze: {
           npm: "@ai-sdk/openai-compatible",
           options: {
-            baseURL: "https://atlas.test/openai/v1",
+            baseURL: "https://actualyze.test/openai/v1",
             probe: "auto",
           },
         },
@@ -1177,7 +1202,7 @@ describe("discoverModels", () => {
       string,
       Record<string, unknown>
     >;
-    const models = providers.atlas.models as Record<
+    const models = providers.actualyze.models as Record<
       string,
       Record<string, unknown>
     >;

@@ -1,24 +1,24 @@
 import type { ProbeModelMeta, ProbeResult, ProviderProbe } from "./types";
 import { buildHeaders, EMPTY_RESULT, probeFetch, readJson } from "./util";
 
-interface AtlasCapabilities {
+interface ActualyzeCapabilities {
   vision?: unknown;
   tool_use?: unknown;
   thinking?: unknown;
   thinking_adaptive?: unknown;
 }
 
-interface AtlasModelDetail {
+interface ActualyzeModelDetail {
   id: string;
   object: string;
   created: number;
   owned_by: string;
   context_window?: unknown;
   max_output_tokens?: unknown;
-  capabilities: AtlasCapabilities;
+  capabilities: ActualyzeCapabilities;
 }
 
-const ATLAS_DETAIL_CONCURRENCY = 8;
+const ACTUALYZE_DETAIL_CONCURRENCY = 8;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -45,10 +45,10 @@ function cancelBody(response: Response): void {
   }
 }
 
-function isAtlasDetail(
+function isActualyzeDetail(
   value: unknown,
   expectedId: string,
-): value is AtlasModelDetail {
+): value is ActualyzeModelDetail {
   if (!isRecord(value) || !isRecord(value.capabilities)) return false;
 
   return (
@@ -56,11 +56,11 @@ function isAtlasDetail(
     value.object === "model" &&
     typeof value.created === "number" &&
     Number.isFinite(value.created) &&
-    value.owned_by === "atlas"
+    value.owned_by === "actualyze"
   );
 }
 
-function toProbeMeta(detail: AtlasModelDetail): ProbeModelMeta {
+function toProbeMeta(detail: ActualyzeModelDetail): ProbeModelMeta {
   const meta: ProbeModelMeta = {};
 
   if (isPositiveSafeInteger(detail.context_window)) {
@@ -96,8 +96,8 @@ function toProbeMeta(detail: AtlasModelDetail): ProbeModelMeta {
   return meta;
 }
 
-/** Probe Atlas model detail endpoints in parallel. */
-export const probeAtlas: ProviderProbe = async (
+/** Probe Actualyze model detail endpoints in parallel. */
+export const probeActualyze: ProviderProbe = async (
   baseURL,
   apiKey,
   context,
@@ -111,7 +111,7 @@ export const probeAtlas: ProviderProbe = async (
 
     const eligibleModels =
       context?.probeSelection === "auto"
-        ? listedModels.filter((model) => model?.owned_by === "atlas")
+        ? listedModels.filter((model) => model?.owned_by === "actualyze")
         : listedModels;
     if (eligibleModels.length === 0) return EMPTY_RESULT;
 
@@ -150,7 +150,7 @@ export const probeAtlas: ProviderProbe = async (
         }
 
         const detail = await readJson<unknown>(response, 2000);
-        if (!signal?.aborted && isAtlasDetail(detail, id)) {
+        if (!signal?.aborted && isActualyzeDetail(detail, id)) {
           models[id] = toProbeMeta(detail);
         }
       }
@@ -158,7 +158,7 @@ export const probeAtlas: ProviderProbe = async (
 
     await Promise.all(
       Array.from(
-        { length: Math.min(ATLAS_DETAIL_CONCURRENCY, modelIds.length) },
+        { length: Math.min(ACTUALYZE_DETAIL_CONCURRENCY, modelIds.length) },
         worker,
       ),
     );
