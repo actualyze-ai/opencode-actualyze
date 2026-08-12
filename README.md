@@ -20,8 +20,8 @@ opencode plugin github:actualyze-ai/opencode-actualyze
 ```
 
 Then add an Actualyze provider to your `opencode.json`. Two details matter:
-the OpenAI-compatible surface lives under the `/openai/v1` path, and your
-personal access token (PAT) goes in `apiKey`:
+the OpenAI-compatible surface lives at `https://app.actualyze.ai/openai/v1`,
+and your personal access token (PAT) goes in `apiKey`:
 
 ```json
 {
@@ -29,7 +29,7 @@ personal access token (PAT) goes in `apiKey`:
     "actualyze": {
       "npm": "@ai-sdk/openai-compatible",
       "options": {
-        "baseURL": "https://your-actualyze-host/openai/v1",
+        "baseURL": "https://app.actualyze.ai/openai/v1",
         "apiKey": "<your PAT>",
         "probe": "actualyze"
       }
@@ -190,7 +190,7 @@ detect the server type automatically:
     "actualyze": {
       "npm": "@ai-sdk/openai-compatible",
       "options": {
-        "baseURL": "https://your-actualyze-host/openai/v1",
+        "baseURL": "https://app.actualyze.ai/openai/v1",
         "apiKey": "<your PAT>",
         "probe": "actualyze"
       }
