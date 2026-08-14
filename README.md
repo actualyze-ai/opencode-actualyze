@@ -1,6 +1,7 @@
 # opencode-actualyze
 
 [![CI](https://github.com/actualyze-ai/opencode-actualyze/actions/workflows/ci.yml/badge.svg)](https://github.com/actualyze-ai/opencode-actualyze/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/opencode-actualyze)](https://www.npmjs.com/package/opencode-actualyze)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 The first-party [opencode](https://github.com/opencode-ai/opencode) plugin
@@ -12,7 +13,7 @@ capability flags, with zero manual model configuration.
 ## Quick Start
 
 ```bash
-opencode plugin github:actualyze-ai/opencode-actualyze
+opencode plugin opencode-actualyze
 ```
 
 Then add an Actualyze provider to your `opencode.json`. Two details matter:
@@ -87,10 +88,14 @@ priority over models.dev guesses.
 It reads the package manifest and registers the plugin in **both**
 `opencode.json` (the server plugin that runs model discovery) **and**
 `tui.json` (the TUI plugin that provides the `/actualyze` dialog) for you. The
-spec it accepts can be a `github:` reference or a local `file://` path:
+spec it accepts can be an npm package name (preferred), a `github:` reference,
+or a local `file://` path:
 
 ```bash
-# From GitHub
+# From npm (recommended)
+opencode plugin opencode-actualyze
+
+# From GitHub (tracks the repo instead of a published release)
 opencode plugin github:actualyze-ai/opencode-actualyze
 
 # From a local checkout (development)
@@ -110,14 +115,15 @@ After installation, add provider configuration with the `probe` field — see
 ### Manual configuration
 
 If you prefer to edit config by hand (or install the package yourself), add the
-plugin to **both** files. Use the same spec in each — a `github:` reference
+plugin to **both** files. Use the same spec in each — the npm package name
+(optionally pinned, e.g. `opencode-actualyze@1.6.2`), a `github:` reference,
 or a `file://` path:
 
 `~/.config/opencode/opencode.json` (server — model discovery):
 
 ```json
 {
-  "plugin": ["github:actualyze-ai/opencode-actualyze"]
+  "plugin": ["opencode-actualyze"]
 }
 ```
 
@@ -126,7 +132,7 @@ or a `file://` path:
 ```json
 {
   "$schema": "https://opencode.ai/tui.json",
-  "plugin": ["github:actualyze-ai/opencode-actualyze"]
+  "plugin": ["opencode-actualyze"]
 }
 ```
 
