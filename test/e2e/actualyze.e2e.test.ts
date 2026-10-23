@@ -146,16 +146,31 @@ async function eventually<T>(
   return undefined;
 }
 
-/** The listed (available) `actualyze` provider, once plugins have loaded. */
+/**
+ * The listed (available) `actualyze` provider, once plugins have loaded.
+ * With `baseURL`, waits until the provider carries it, because the host can
+ * list the built-in record before configured settings are merged over it.
+ * On timeout it returns the last provider seen, so a failure shows its
+ * settings.
+ */
 async function findProvider(
   host: OpenCode.Interface,
   location: { directory: string },
+  baseURL?: string,
 ) {
-  return eventually(async () =>
+  const read = async () =>
     (await host.provider.list({ location })).data.find(
       (entry) => entry.id === "actualyze",
-    ),
-  );
+    );
+  let last: Awaited<ReturnType<typeof read>>;
+  const found = await eventually(async () => {
+    last = await read();
+    if (!last) return undefined;
+    if (baseURL !== undefined && last.settings?.baseURL !== baseURL)
+      return undefined;
+    return last;
+  });
+  return found ?? last;
 }
 
 async function findModel(
@@ -236,7 +251,11 @@ describe("Actualyze with ACTUALYZE_API_KEY and a configured base URL", () => {
   });
 
   it("uses the configured base URL over the built-in one", async () => {
-    const provider = await findProvider(host!, location);
+    const provider = await findProvider(
+      host!,
+      location,
+      `${mockURL}/openai/v1`,
+    );
     expect(provider).toMatchObject({
       integrationID: INTEGRATION_ID,
       settings: { baseURL: `${mockURL}/openai/v1`, probe: "actualyze" },
@@ -408,7 +427,9 @@ describe("Actualyze with a configured base URL and a key stored through the host
 
   it("stores the key on the provider's integration and discovers with it", async () => {
     // The config entry lists the provider before any key exists.
-    expect(await findProvider(host!, location)).toMatchObject({
+    expect(
+      await findProvider(host!, location, `${mockURL}/openai/v1`),
+    ).toMatchObject({
       integrationID: INTEGRATION_ID,
       settings: { baseURL: `${mockURL}/openai/v1`, probe: "actualyze" },
     });
