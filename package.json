@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json.schemastore.org/package.json",
+  "name": "opencode-actualyze",
+  "version": "2.0.1",
+  "description": "Actualyze's OpenCode plugin: adds the Actualyze provider and auto-discovers models from OpenAI-compatible providers, enriched with context window sizes, capability flags, prices, and model metadata. Supports Actualyze, Ollama, oMLX, vLLM, TGI, SGLang, LM Studio, KoboldCpp, llama.cpp, and LocalAI.",
+  "type": "module",
+  "main": "./dist/server.js",
+  "exports": {
+    ".": {
+      "types": "./dist/server.d.ts",
+      "import": "./dist/server.js"
+    },
+    "./server": {
+      "types": "./dist/server.d.ts",
+      "import": "./dist/server.js"
+    },
+    "./tui": {
+      "types": "./dist/tui.d.ts",
+      "import": "./dist/tui.js"
+    },
+    "./rpc": {
+      "types": "./dist/rpc.d.ts",
+      "import": "./dist/rpc.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "prepare": "husky",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier . --write",
+    "format:check": "prettier . --check",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "test:coverage": "vitest run --coverage",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run test:run && npm run test:e2e && npm run compile && npm run check:dist",
+    "fix": "npm run lint:fix && npm run format",
+    "compile": "tsup --dts",
+    "compile:dev": "tsup",
+    "check:dist": "node scripts/check-dist.mjs",
+    "build": "npm run check",
+    "prepack": "npm run compile"
+  },
+  "lint-staged": {
+    "*.mjs": [
+      "eslint --fix --max-warnings=0 --no-warn-ignored",
+      "prettier --write"
+    ],
+    "*.ts": [
+      "eslint --fix --max-warnings=0 --no-warn-ignored",
+      "prettier --write"
+    ],
+    "*.{json,md,yml,yaml}": [
+      "prettier --write"
+    ]
+  },
+  "keywords": [
+    "opencode",
+    "actualyze",
+    "opencode-plugin",
+    "model-discovery",
+    "openai-compatible",
+    "ollama",
+    "omlx",
+    "vllm",
+    "tgi",
+    "sglang",
+    "lmstudio",
+    "lm-studio",
+    "koboldcpp",
+    "llama-cpp",
+    "llamacpp",
+    "localai",
+    "local-ai",
+    "llm",
+    "local-llm",
+    "plugin",
+    "auto-discovery",
+    "context-window",
+    "model-server",
+    "inference-server"
+  ],
+  "author": "Actualyze",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/actualyze-ai/opencode-actualyze.git"
+  },
+  "dependencies": {
+    "string-width": "7.2.0"
+  },
+  "peerDependencies": {
+    "@opentui/core": "0.5.17",
+    "@opentui/solid": "0.5.17"
+  },
+  "peerDependenciesMeta": {
+    "@opentui/core": {
+      "optional": true
+    },
+    "@opentui/solid": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.4",
+    "@opencode/plugin": "2.0.26",
+    "@opencode/sdk": "2.0.26",
+    "@opencode/theme": "2.0.26",
+    "@opentui/core": "0.5.17",
+    "@opentui/solid": "0.5.17",
+    "@types/node": "^25.0.3",
+    "@vitest/coverage-v8": "^4.0.16",
+    "eslint": "^9.39.2",
+    "eslint-config-prettier": "^10.1.8",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.4.0",
+    "prettier": "^3.8.2",
+    "solid-js": "1.9.12",
+    "tsup": "^8.5.1",
+    "tuistory": "^0.10.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.58.1",
+    "vitest": "^4.0.16"
+  },
+  "engines": {
+    "node": "^22.18.0 || >=24.0.0"
+  }
+}

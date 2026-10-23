@@ -1,0 +1,70 @@
+import type {
+  ProbeModelMeta,
+  ProbeResult,
+  ProviderProbe,
+  ProbeContext,
+} from "./types";
+import {
+  buildHeaders,
+  probeFetchJson,
+  EMPTY_RESULT,
+  isFiniteNumber,
+} from "./util";
+
+interface SglangModelInfoResponse {
+  model_path?: string;
+  is_generation?: boolean;
+  model_type?: string;
+  has_image_understanding?: boolean;
+  has_audio_understanding?: boolean;
+  architectures?: string[];
+}
+
+export const probeSglang: ProviderProbe = async (
+  baseURL: string,
+  apiKey?: string,
+  context?: ProbeContext,
+): Promise<ProbeResult> => {
+  try {
+    const headers = buildHeaders(apiKey, context?.headers);
+
+    const info = await probeFetchJson<SglangModelInfoResponse>(
+      `${baseURL}/model_info`,
+      "SGLang probe",
+      { headers },
+    );
+    if (!info) return EMPTY_RESULT;
+    const entries = context?.modelsResponse;
+
+    // Key by the listed model ID, as discovery does.
+    // Fall back to model_path for SGLang servers without /v1/models.
+    const modelId = entries?.[0]?.id ?? info.model_path;
+    if (!modelId) return EMPTY_RESULT;
+
+    const meta: ProbeModelMeta = {};
+
+    // Get context from modelsResponse max_model_len
+    const entry = entries?.find((e) => e.id === modelId) ?? entries?.[0];
+    if (isFiniteNumber(entry?.max_model_len)) {
+      meta.context = entry.max_model_len;
+    }
+
+    // Map capabilities
+    if (info.has_image_understanding) {
+      meta.vision = true;
+      meta.modelType = "vlm";
+    } else if (info.is_generation) {
+      meta.modelType = "llm";
+    }
+
+    // Family from model_type
+    if (info.model_type) {
+      meta.family = info.model_type;
+    }
+
+    return { models: { [modelId]: meta } };
+  } catch {
+    // Probe failed; degrade silently (never write to stdout/stderr).
+    return EMPTY_RESULT;
+  }
+};
