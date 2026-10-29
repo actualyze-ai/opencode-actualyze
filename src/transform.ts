@@ -19,6 +19,7 @@
 import type { Plugin } from "@opencode/plugin";
 import { addActualyzeProvider, type ActualyzeAddition } from "./actualyze";
 import {
+  ACTUALYZE_BASE_URL,
   NEVER_PROBED_PROVIDER_IDS,
   OPENAI_COMPATIBLE_PACKAGES,
 } from "./constants";
@@ -189,12 +190,13 @@ export function servedBinding(
 
 /**
  * Record the provider IDs present before this transform, then add the
- * built-in Actualyze provider and record whether it was added. Recording
- * comes first so the added provider never counts as pre-existing; it is a
- * target through `settings.probe`.
+ * built-in Actualyze provider at `actualyzeBaseURL` and record whether it
+ * was added. Recording comes first so the added provider never counts as
+ * pre-existing; it is a target through `settings.probe`.
  */
 export function createProviderTransform(
   state: TransformState,
+  actualyzeBaseURL: string = ACTUALYZE_BASE_URL,
 ): (editor: ProviderEditor) => void {
   return (editor) => {
     try {
@@ -204,7 +206,7 @@ export function createProviderTransform(
     } catch {
       state.recorded = undefined;
     }
-    state.actualyze = addActualyzeProvider(editor);
+    state.actualyze = addActualyzeProvider(editor, actualyzeBaseURL);
   };
 }
 

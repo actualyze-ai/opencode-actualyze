@@ -93,6 +93,7 @@ function samplePayload(): CatalogPayload {
         discovering: false,
         lastAttemptAt: at,
         nextRefreshAt: null,
+        held: false,
         credentialSource: "none",
         credentialEpoch: 0,
         resultEpoch: 0,

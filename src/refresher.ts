@@ -4,13 +4,23 @@
  * reloads the model catalog when a binding changes, and builds the RPC
  * catalog payload.
  *
- * Triggers (debounced): once after setup, `plugin.updated`,
- * `provider.updated`, `config.updated`, `integration.updated`,
- * `credential.updated`, `credential.switched`, the periodic refresh, and
- * RPC `refresh`. Events pass when they carry no location or this
- * instance's location; `credential.switched` is published without one.
- * A reload publishes only `model.updated`, which is not a trigger, so a
- * reload cannot trigger itself.
+ * Triggers (debounced): the end of the host's plugin activation,
+ * `plugin.updated`, `provider.updated`, `config.updated`,
+ * `integration.updated`, `credential.updated`, `credential.switched`, the
+ * periodic refresh, and RPC `refresh`. Events pass when they carry no
+ * location or this instance's location; `credential.switched` is published
+ * without one. A reload publishes only `model.updated`, which is not a
+ * trigger, so a reload cannot trigger itself.
+ *
+ * No trigger runs a sync before the host has finished the plugin activation
+ * that started this instance. Until then the provider list holds only the
+ * plugins set up so far: the config provider plugin, which merges
+ * `providers.<id>.settings` over plugin records, runs after every external
+ * plugin, so a target could still carry a base URL that config replaces,
+ * and discovery would send its key there. The end of the activation is a
+ * located `plugin.updated`, or the plugin list rule in `watchActivation`.
+ * `provider.updated` never counts: the host also publishes it for a
+ * credential or integration change, from a read of the half-built list.
  *
  * Catalog records are kept per provider ID in a map that outlives each
  * sync's resolved targets, so an eligible provider keeps its record through
@@ -75,6 +85,17 @@ const MAX_INTERVAL_MS = 86_400_000;
 const DEBOUNCE_MS = 50;
 const EVENT_RETRY_MS = 1_000;
 const EVENT_RETRY_MAX_MS = 30_000;
+/** First read of the host's plugin list after the one at start; the wait doubles from here. */
+export const ACTIVATION_PROBE_MS = 500;
+const ACTIVATION_PROBE_MAX_MS = 5_000;
+/**
+ * How long after start an instance waits for `plugin.updated` when the first
+ * read of the plugin list that answered already had an entry for this
+ * plugin, before such an entry alone counts as the end of its activation.
+ * The entry may belong to the instance this one replaces, so this rule rests
+ * on elapsed time only.
+ */
+export const REPLACEMENT_WAIT_MS = 30_000;
 
 export const STORAGE_PREFIX = "binding/";
 const MAX_PERSISTED_BINDINGS = 128;
@@ -152,6 +173,12 @@ export interface RefresherHost {
     integrationID: string,
   ): Promise<ActiveCredential | undefined>;
   reload(): Promise<void>;
+  /**
+   * Whether the host's plugin list has an entry for this plugin, in any
+   * state. The host replaces that list only once an activation has set up
+   * every plugin.
+   */
+  pluginListed(): Promise<boolean>;
   events(signal: AbortSignal): AsyncIterable<HostEvent>;
   emitUpdated(completedAt: string): Promise<void>;
   /** Publish the RPC `status` event. */
@@ -176,9 +203,12 @@ export interface RefresherDeps {
 export interface Refresher {
   start(): void;
   dispose(): void;
-  /** Schedule a debounced sync. */
+  /** Schedule a debounced sync, once the host has finished activating plugins. */
   trigger(): void;
-  /** Run a sync now; resolves when it has started or joined every job it needs. */
+  /**
+   * Run a sync now, without waiting for the host's activation; resolves when
+   * it has started or joined every job it needs.
+   */
   sync(): Promise<void>;
   refresh(providerID?: string): RefreshOutput;
   handleEvent(event: HostEvent): void;
@@ -193,6 +223,8 @@ interface TargetState extends EligibleTarget {
   readonly credential: CredentialFingerprint;
   /** The key used for discovery: the integration key or `settings.apiKey`. */
   readonly discoveryKey?: string;
+  /** The confirmation count when the sync that resolved the target started. */
+  readonly generation: number;
 }
 
 /** Record identity of a target whose credential is not resolved. */
@@ -507,6 +539,38 @@ export function createRefresher(deps: RefresherDeps): Refresher {
   const instanceID = randomUUID();
   let statusQueued = false;
 
+  /**
+   * Whether the host has finished the plugin activation that started this
+   * instance; triggers before then only wait.
+   */
+  let activated = false;
+  /**
+   * Whether elapsed time alone activated this instance (the replacement
+   * branch of `watchActivation`), so the provider list it reads may still be
+   * half built. While held, the instance serves exactly the stored binding of
+   * each target's current store key and starts no discovery job. Only a
+   * located `plugin.updated` ends it, and only through a sync that started
+   * after it (see `releaseAt`); elapsed time never does.
+   */
+  let held = false;
+  /**
+   * Located `plugin.updated` events that arrived while held. A sync notes the
+   * count when it starts, before it reads the provider list, so a sync whose
+   * count is below the latest one read that list before OpenCode reported
+   * that loading finished.
+   */
+  let confirmations = 0;
+  /**
+   * While held, the count a sync must have started at to end the hold: the
+   * latest confirmation's. Undefined until one arrives.
+   */
+  let releaseAt: number | undefined;
+  /**
+   * The count of the sync that ended the hold. A target resolved by a sync
+   * that started before it never starts a job.
+   */
+  let liftedAt = 0;
+
   const lastSwitch = (integrationID: string): number =>
     Math.max(
       switchedAt.get(integrationID) ?? 0,
@@ -722,9 +786,17 @@ export function createRefresher(deps: RefresherDeps): Refresher {
       host.persist(`${STORAGE_PREFIX}${binding.key}`, toPersisted(binding)),
   };
 
+  /**
+   * Start or join the target's discovery job. Every path into discovery
+   * (sync, the interval, credential events, RPC `refresh`) comes through
+   * here, so a held instance sends no request, with a key or without one,
+   * and neither does a target read before the confirmation that ended a
+   * hold.
+   */
   const startJob = (
     target: TargetState,
-  ): ReturnType<DiscoveryStore["start"]> => {
+  ): ReturnType<DiscoveryStore["start"]> | "held" => {
+    if (held || target.generation < liftedAt) return "held";
     const discoveryTarget: DiscoveryTarget = {
       providerID: target.providerID,
       baseURL: target.baseURL,
@@ -749,6 +821,7 @@ export function createRefresher(deps: RefresherDeps): Refresher {
 
   const withCredential = (
     target: EligibleTarget,
+    generation: number,
     credential: CredentialFingerprint,
     discoveryKey: string | undefined,
   ): TargetState => ({
@@ -756,6 +829,7 @@ export function createRefresher(deps: RefresherDeps): Refresher {
     keys: credentialKeys(target.keys, credential),
     credential,
     ...(discoveryKey === undefined ? {} : { discoveryKey }),
+    generation,
   });
 
   /**
@@ -773,6 +847,7 @@ export function createRefresher(deps: RefresherDeps): Refresher {
    */
   const resolveTarget = async (
     target: EligibleTarget,
+    generation: number,
   ): Promise<TargetState | undefined> => {
     let credential: ActiveCredential | undefined;
     try {
@@ -785,17 +860,23 @@ export function createRefresher(deps: RefresherDeps): Refresher {
           ? previous
           : undefined;
       if (kept && (kept.credential !== "none" || !target.apiKey))
-        return withCredential(target, kept.credential, kept.discoveryKey);
+        return withCredential(
+          target,
+          generation,
+          kept.credential,
+          kept.discoveryKey,
+        );
       if (target.apiKey)
-        return withCredential(target, "settings", target.apiKey);
+        return withCredential(target, generation, "settings", target.apiKey);
       return undefined;
     }
     if (!credential)
       return target.apiKey
-        ? withCredential(target, "settings", target.apiKey)
-        : withCredential(target, "none", undefined);
+        ? withCredential(target, generation, "settings", target.apiKey)
+        : withCredential(target, generation, "none", undefined);
     return withCredential(
       target,
+      generation,
       `integration:${fingerprint(
         "integration",
         `${credential.connection}\n${credential.key}`,
@@ -806,6 +887,9 @@ export function createRefresher(deps: RefresherDeps): Refresher {
 
   const runSync = async (): Promise<void> => {
     const epoch = switches;
+    // Noted before the provider list is read, so a confirmation that arrives
+    // while this sync waits does not count for what it read.
+    const generation = confirmations;
     let providers: readonly ProviderLike[];
     try {
       providers = await host.listProviders();
@@ -825,7 +909,11 @@ export function createRefresher(deps: RefresherDeps): Refresher {
     // A switch during this sync may have come after a lookup returned the
     // previous account, or no connection, so every resolution it covers is
     // dropped; the switch scheduled another sync to resolve them again.
-    const resolved = (await Promise.all(eligible.map(resolveTarget))).filter(
+    const resolved = (
+      await Promise.all(
+        eligible.map((target) => resolveTarget(target, generation)),
+      )
+    ).filter(
       (target): target is TargetState =>
         target !== undefined && lastSwitch(target.integrationID) <= epoch,
     );
@@ -868,6 +956,16 @@ export function createRefresher(deps: RefresherDeps): Refresher {
     for (const record of records.values())
       if (!eligibleIDs.has(record.target.providerID)) record.present = false;
 
+    // A confirmation ends the hold only here, once a sync that started after
+    // it has replaced the targets, so neither RPC `refresh` nor a sync that
+    // read the list earlier can start a job for what it read.
+    if (held && releaseAt !== undefined && generation >= releaseAt) {
+      held = false;
+      releaseAt = undefined;
+      liftedAt = generation;
+      queueStatus();
+    }
+
     let changed = false;
     for (const target of next.values()) {
       const key = target.keys.key;
@@ -882,7 +980,16 @@ export function createRefresher(deps: RefresherDeps): Refresher {
       const stored = store.served(key);
       const current =
         stored?.credential === target.credential ? stored : undefined;
-      if (current && state.active.get(target.providerID) !== current) {
+      if (held) {
+        // Nothing replaces a binding while held, so the target serves the
+        // binding of its current store key or nothing: not one kept from an
+        // earlier probe selection, and not one from another endpoint.
+        if (state.active.get(target.providerID) !== current) {
+          if (current) state.active.set(target.providerID, current);
+          else state.active.delete(target.providerID);
+          changed = true;
+        }
+      } else if (current && state.active.get(target.providerID) !== current) {
         state.active.set(target.providerID, current);
         changed = true;
       }
@@ -926,7 +1033,7 @@ export function createRefresher(deps: RefresherDeps): Refresher {
   };
 
   const trigger = (): void => {
-    if (disposed) return;
+    if (disposed || !activated) return;
     if (debounceTimer !== undefined) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
       debounceTimer = undefined;
@@ -934,9 +1041,37 @@ export function createRefresher(deps: RefresherDeps): Refresher {
     }, debounceMs);
   };
 
+  /**
+   * Let triggers through from now on, and run a sync. `confirmed` is false
+   * when elapsed time is the only evidence that the host's activation has
+   * ended; the instance is then held. A confirmation while held does not
+   * lift the hold itself: the next sync that starts after it does, once it
+   * has replaced the targets.
+   */
+  const activate = (confirmed: boolean): void => {
+    if (disposed) return;
+    if (activated) {
+      if (!confirmed || !held) return;
+      confirmations += 1;
+      releaseAt = confirmations;
+      trigger();
+      return;
+    }
+    activated = true;
+    held = !confirmed;
+    trigger();
+  };
+
   const handleEvent = (event: HostEvent): void => {
     if (disposed || !TRIGGER_EVENTS.has(event.type)) return;
     if (!sameLocation(event.location, host.location)) return;
+    // The host publishes `plugin.updated` only after an activation has set
+    // up every plugin and published its batched state changes, and only
+    // under the lock that activation holds, so it never comes from the
+    // middle of one. It names the location whose activation it reports; one
+    // without a location could come from another location's.
+    if (event.type === "plugin.updated" && event.location !== undefined)
+      activate(true);
     if (event.type === "credential.switched") {
       // Each affected target's resolution belongs to the previous account,
       // or, for a `settings.apiKey` or keyless resolution, to a time when
@@ -976,6 +1111,24 @@ export function createRefresher(deps: RefresherDeps): Refresher {
     trigger();
   };
 
+  /** Wait `ms`, or less when the refresher is disposed. */
+  const pause = (ms: number): Promise<void> =>
+    new Promise<void>((resolve) => {
+      if (lifetime.signal.aborted) {
+        resolve();
+        return;
+      }
+      const abort = (): void => {
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(() => {
+        lifetime.signal.removeEventListener("abort", abort);
+        resolve();
+      }, ms);
+      lifetime.signal.addEventListener("abort", abort, { once: true });
+    });
+
   const listen = async (): Promise<void> => {
     let delay = EVENT_RETRY_MS;
     while (!disposed) {
@@ -989,18 +1142,51 @@ export function createRefresher(deps: RefresherDeps): Refresher {
         // The stream failed; resubscribe after a delay.
       }
       if (disposed) return;
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, delay);
-        lifetime.signal.addEventListener(
-          "abort",
-          () => {
-            clearTimeout(timer);
-            resolve();
-          },
-          { once: true },
-        );
-      });
+      await pause(delay);
       delay = Math.min(EVENT_RETRY_MAX_MS, delay * 2);
+    }
+  };
+
+  /**
+   * The fallback for a `plugin.updated` this instance never sees, because
+   * its subscription started late or failed, or because the host published
+   * none: a reload that leaves the plugin list unchanged publishes none.
+   *
+   * The host replaces its plugin list only at the end of an activation, and
+   * keeps an entry for this plugin through a reload of it. So when the first
+   * read that answers has no entry, this is the plugin's first activation at
+   * this location, and the first later read that has one comes after it.
+   * That case activates fully. When the first read that answers already has
+   * one, the entry may be the instance's own after a first activation whose
+   * earlier reads failed, or the one this instance replaces, which stays
+   * until the reload ends. Nothing tells the two apart, so once
+   * {@link REPLACEMENT_WAIT_MS} have passed since start the instance
+   * activates held: it serves stored bindings and sends no request.
+   */
+  const watchActivation = async (): Promise<void> => {
+    const since = now();
+    /** Set by the first read that answers. */
+    let replacing: boolean | undefined;
+    let delay = 0;
+    while (!activated && !disposed) {
+      if (delay > 0) {
+        await pause(delay);
+        if (activated || disposed) return;
+      }
+      delay =
+        delay === 0
+          ? ACTIVATION_PROBE_MS
+          : Math.min(ACTIVATION_PROBE_MAX_MS, delay * 2);
+      let listed: boolean;
+      try {
+        listed = await host.pluginListed();
+      } catch {
+        continue;
+      }
+      if (activated || disposed) return;
+      if (replacing === undefined) replacing = listed;
+      else if (listed && !replacing) activate(true);
+      else if (listed && now() - since >= REPLACEMENT_WAIT_MS) activate(false);
     }
   };
 
@@ -1011,10 +1197,14 @@ export function createRefresher(deps: RefresherDeps): Refresher {
     );
     if (selected.length === 0) return { accepted: false, reason: "no-targets" };
     let accepted = false;
+    let refused = false;
     for (const target of selected) {
-      if (startJob(target) !== "throttled") accepted = true;
+      const result = startJob(target);
+      if (result === "held") refused = true;
+      else if (result !== "throttled") accepted = true;
     }
-    return accepted ? { accepted } : { accepted, reason: "throttled" };
+    if (accepted) return { accepted };
+    return { accepted, reason: refused ? "held" : "throttled" };
   };
 
   /**
@@ -1049,6 +1239,7 @@ export function createRefresher(deps: RefresherDeps): Refresher {
       skippedModelIds: [],
       models: [],
       ...status,
+      held,
       credentialEpoch: record.credentialEpoch,
       resultEpoch: record.resultEpoch,
     };
@@ -1141,6 +1332,7 @@ export function createRefresher(deps: RefresherDeps): Refresher {
       ),
       models,
       ...status,
+      held,
       credentialEpoch: record.credentialEpoch,
       resultEpoch: record.resultEpoch,
     };
@@ -1195,7 +1387,7 @@ export function createRefresher(deps: RefresherDeps): Refresher {
   return {
     start(): void {
       void listen();
-      trigger();
+      void watchActivation();
       if (options.refreshIntervalMs > 0) {
         intervalTimer = setInterval(trigger, options.refreshIntervalMs);
         (intervalTimer as { unref?: () => void }).unref?.();

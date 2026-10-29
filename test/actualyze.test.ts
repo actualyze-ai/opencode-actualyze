@@ -1,8 +1,46 @@
 import { describe, expect, it } from "vitest";
 import {
+  actualyzeBaseURL,
   registerActualyzeIntegration,
   type IntegrationEditor,
 } from "../src/actualyze";
+
+describe("actualyzeBaseURL", () => {
+  const PRODUCTION = "https://app.actualyze.ai/openai/v1";
+
+  it("is the production endpoint without ACTUALYZE_OPENAI_BASE_URL", () => {
+    expect(actualyzeBaseURL({})).toBe(PRODUCTION);
+  });
+
+  it("takes an http(s) ACTUALYZE_OPENAI_BASE_URL, normalized", () => {
+    expect(
+      actualyzeBaseURL({
+        ACTUALYZE_OPENAI_BASE_URL: " https://Staging.Example:443/openai/v1/#x",
+      }),
+    ).toBe("https://staging.example/openai/v1");
+    expect(
+      actualyzeBaseURL({
+        ACTUALYZE_OPENAI_BASE_URL: "http://127.0.0.1:3001/openai/v1",
+      }),
+    ).toBe("http://127.0.0.1:3001/openai/v1");
+  });
+
+  it("drops credentials from the URL", () => {
+    expect(
+      actualyzeBaseURL({
+        ACTUALYZE_OPENAI_BASE_URL: "https://user:secret@staging.example/v1",
+      }),
+    ).toBe("https://staging.example/v1");
+  });
+
+  it("falls back to production for a value that is not an http(s) URL", () => {
+    for (const value of ["", "   ", "staging.example/v1", "ftp://a.example/v1"])
+      expect(
+        actualyzeBaseURL({ ACTUALYZE_OPENAI_BASE_URL: value }),
+        value,
+      ).toBe(PRODUCTION);
+  });
+});
 
 interface FakeIntegration {
   ref: { id: string; name: string };

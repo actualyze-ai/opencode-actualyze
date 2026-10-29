@@ -134,7 +134,7 @@ file), that the discovered models carry the expected limits, capabilities,
 variants, and prices (Actualyze expectations come from the endpoint's own
 `/models` list), that embedding models are not offered for chat, that the
 declared `mock-tiered-pro` keeps its configured name, limits, and cost
-tiers, that the RPC catalog passes the strict v5 validator with settled
+tiers, that the RPC catalog passes the strict v6 validator with settled
 records (not discovering, `resultEpoch` equal to `credentialEpoch`) and the
 expected `credentialSource`, and that one plain chat request succeeds
 against the first model in the Actualyze list, without an effort variant.
@@ -210,7 +210,7 @@ Each run connects the scenario's synthetic key, if it has one, through the
 server API before the TUI starts, launches the TUI with the same isolated
 environment as the harness, checks that the chosen theme is applied, and
 runs the scenario's steps. Then it waits for the harness server's catalog
-to settle and checks it against the v5 validator and the scenario's own
+to settle and checks it against the v6 validator and the scenario's own
 catalog checks.
 
 The runner refuses to start while `ACTUALYZE_API_KEY_FILE` or
@@ -307,7 +307,8 @@ sequenceDiagram
     SV-->>OC: cleanup function
     OC->>TR: fold the model catalog
     TR-->>OC: patches from stored inventories
-    loop Each trigger (startup, events, interval, refresh RPC)
+    OC-->>RF: plugin.updated once every plugin is set up
+    loop Each trigger (activation end, events, interval, refresh RPC)
         RF->>OC: provider.list()
         RF->>ST: start or join a job per target
         RF-->>TU: RPC event status
@@ -331,7 +332,9 @@ sequenceDiagram
   network I/O.
 - **`src/actualyze.ts`** defines the built-in Actualyze provider and its
   integration (a key method and the `ACTUALYZE_API_KEY` environment
-  variable). The integration ID is `actualyze`, the provider ID, because the
+  variable). The provider's base URL is `ACTUALYZE_OPENAI_BASE_URL` when
+  that holds an http(s) URL, else the production endpoint; a configured
+  `settings.baseURL` replaces either. The integration ID is `actualyze`, the provider ID, because the
   host's config provider plugin registers an integration under the provider
   ID for every `providers.<id>` entry unless one exists, and
   `opencode auth login actualyze` resolves an integration by exact ID first;
@@ -353,7 +356,17 @@ sequenceDiagram
   through the binding the refresher made active for this instance after
   resolving its credential.
 - **`src/refresher.ts`** turns host events, the refresh interval, and RPC
-  `refresh` calls into debounced syncs. A sync resolves each target's
+  `refresh` calls into debounced syncs. None runs before the host has
+  finished the plugin activation that started the instance: until then the
+  provider list lacks the config provider plugin's settings, so a target
+  could still carry a base URL that config replaces. The end is the
+  located `plugin.updated`, or, if none arrives, the host's plugin list,
+  which changes only at the end of an activation. An instance that may be
+  replacing an earlier one takes the list as the end only after 30 s, and
+  then starts held: it serves the stored binding of each target's current
+  store key and starts no discovery job at all until a located
+  `plugin.updated` lifts the hold (see `AGENTS.md`).
+  A sync resolves each target's
   credential in the order the host uses for chat (the integration's active
   connection, then `settings.apiKey`, then none), activates a stored binding
   for it, subscribes to the target's store entry, starts discovery for
@@ -459,7 +472,7 @@ because the host derives variants per provider package.
 `src/rpc.ts` defines the RPC contract as a plain object:
 
 - `catalog({})` returns the evidence payload defined in
-  `src/catalog-evidence.ts` (schema version 5). The payload carries the
+  `src/catalog-evidence.ts` (schema version 6). The payload carries the
   catalog status and timestamps, a random `instanceID` that changes when the
   server half reloads or restarts, the server time `generatedAt` for
   countdowns, and `builtIn.actualyze`: `foreign` when another source defined
@@ -470,6 +483,9 @@ because the host derives variants per provider package.
   - `discovering`, `lastAttemptAt`, and `nextRefreshAt`, the later of the
     last start plus one minute and the failure's `retryAt`, or null once it
     has passed.
+  - `held`: true while the server half is held, so it starts no discovery
+    until OpenCode reports that loading finished or restarts; the stored
+    inventory is still served.
   - `credentialSource`: `connection`, `settings`, `headers` (provider
     headers replace the key), `none`, or `unresolved`.
   - `credentialEpoch`, which goes up whenever the resolved credential
@@ -484,7 +500,15 @@ because the host derives variants per provider package.
 - `refresh({ providerID? })` starts discovery for one target or all of them
   and returns `{ accepted, reason? }`. It joins an in-flight job and respects
   each record's `nextRefreshAt`. When nothing starts or joins, `reason` is
-  `throttled` or `no-targets`.
+  `throttled`, `no-targets`, or `held`.
+
+`opencode-actualyze/rpc` exports this contract to other clients, and its
+JSON schemas pin the catalog's `schemaVersion` and enumerate the `refresh`
+reasons. Changing either, or adding a required record field, breaks a
+strict client, so it needs a major version and an entry under "Upgrading"
+in the README. Version 6 of the catalog, in 3.0.0, added `held` to every
+record and `held` to the `refresh` reasons.
+
 - The `updated` event carries `{ completedAt }` after a discovery cycle, and
   after a sync first resolves the targets or changes the bindings they
   serve. The status is `pending` only until that first sync; with no job

@@ -50,7 +50,14 @@ export const ACTUALYZE_PROVIDER_ID = "actualyze";
  */
 export const ACTUALYZE_INTEGRATION_ID = ACTUALYZE_PROVIDER_ID;
 export const ACTUALYZE_NAME = "Actualyze";
+/** The production endpoint, the built-in provider's base URL unless {@link ACTUALYZE_BASE_URL_ENV} names another. */
 export const ACTUALYZE_BASE_URL = "https://app.actualyze.ai/openai/v1";
+/**
+ * Environment variable with the base URL the built-in provider starts from,
+ * for a launcher that points one run at another Actualyze environment. A
+ * configured `settings.baseURL` still replaces it.
+ */
+export const ACTUALYZE_BASE_URL_ENV = "ACTUALYZE_OPENAI_BASE_URL";
 /** The host's native Chat Completions package for openai-compatible APIs. */
 export const ACTUALYZE_PACKAGE = "@opencode/ai/providers/openai-compatible";
 export const ACTUALYZE_ENV = "ACTUALYZE_API_KEY";

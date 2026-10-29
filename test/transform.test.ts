@@ -380,6 +380,20 @@ describe("provider transform", () => {
     });
   });
 
+  it("adds the Actualyze provider at the base URL it was created with", () => {
+    const state = createTransformState();
+    const { editor, records } = fakeProviderEditor([]);
+    createProviderTransform(state, "http://staging.example/openai/v1")(editor);
+    const added = records.get("actualyze")?.provider;
+    expect(added?.settings).toEqual({
+      baseURL: "http://staging.example/openai/v1",
+      probe: "actualyze",
+    });
+    expect(eligibleTarget(added!, state.recorded)?.baseURL).toBe(
+      "http://staging.example/openai/v1",
+    );
+  });
+
   it("keeps an existing actualyze provider, which stays out of auto-discovery", () => {
     const state = createTransformState();
     const catalog = provider("actualyze", {

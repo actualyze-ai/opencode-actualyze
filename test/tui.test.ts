@@ -242,6 +242,7 @@ function providerRecord(
     discovering: false,
     lastAttemptAt: GENERATED_AT,
     nextRefreshAt: null,
+    held: false,
     credentialSource: "connection",
     credentialEpoch: 0,
     resultEpoch: 0,

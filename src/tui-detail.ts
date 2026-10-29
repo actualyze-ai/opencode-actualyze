@@ -213,17 +213,29 @@ export function unknownProbeWarning(probe: string): string {
 export const UNKNOWN_PROBE_EFFECT =
   "No probe runs, so the models get no limits, prices, or capabilities from the server.";
 
+/** Headline for a `held` record. */
+export const HELD_HEADLINE = "Waiting for OpenCode to finish loading";
+/** Why a `held` record gets no discovery. */
+export const HELD_REASON =
+  "OpenCode has not reported that its plugins finished loading, so Model Scout sends no requests.";
+/** What ends a hold, as a card title. */
+export const HELD_TITLE = "Restart OpenCode to refresh models";
+/** What ends a hold, as a sentence. */
+export const HELD_ACTION = `${HELD_TITLE}.`;
+
 /**
  * The status shown at the right edge of a provider header. A record whose
  * result belongs to an earlier credential, or that has none yet, shows as
- * checking rather than with the earlier result. A failure outranks an
- * unknown probe.
+ * checking rather than with the earlier result. A held record shows that it
+ * needs a restart, whatever result it has. A failure outranks an unknown
+ * probe.
  */
 export function providerStatus(
   record: CatalogProviderRecord | undefined,
 ): StatusLabel | undefined {
   if (!record) return undefined;
   if (record.discovering) return { text: "○ checking", role: "info" };
+  if (record.held) return { text: "▲ restart needed", role: "warn" };
   if (record.credentialSource === "unresolved")
     return { text: "○ resolving", role: "info" };
   if (record.resultEpoch !== record.credentialEpoch)
@@ -236,16 +248,17 @@ export function providerStatus(
 }
 
 /**
- * Whether a provider needs the user: its latest discovery failed, or its
- * configured probe is unknown.
+ * Whether a provider needs the user: it is held until OpenCode restarts,
+ * its latest discovery failed, or its configured probe is unknown.
  */
 export function needsAttention(
   record: CatalogProviderRecord | undefined,
 ): boolean {
   return (
     record !== undefined &&
-    record.resultEpoch === record.credentialEpoch &&
-    (record.failure !== null || unknownProbe(record) !== undefined)
+    (record.held ||
+      (record.resultEpoch === record.credentialEpoch &&
+        (record.failure !== null || unknownProbe(record) !== undefined)))
   );
 }
 
@@ -751,6 +764,21 @@ export function providerDetailLines(
     );
   } else if (record.discovering) {
     lines.push([seg("○ Checking the model list…", "info")]);
+  } else if (record.held) {
+    lines.push(...paragraph(`▲ ${HELD_HEADLINE}`, width, "warn"));
+    lines.push([]);
+    lines.push(...paragraph(`${HELD_REASON} ${HELD_ACTION}`, width, "base"));
+    if (record.lastGoodAt) {
+      const age = relativeAge(record.lastGoodAt, now);
+      lines.push([]);
+      lines.push(
+        ...paragraph(
+          `Showing ${group.models.length} ${group.models.length === 1 ? "model" : "models"} from the last good check${age ? `, ${age}` : ""}.`,
+          width,
+          "muted",
+        ),
+      );
+    }
   } else if (record.credentialSource === "unresolved" || !current) {
     lines.push([seg("○ Waiting for the current credential", "info")]);
   } else if (record.failure) {

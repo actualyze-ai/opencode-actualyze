@@ -19,7 +19,9 @@
  * exists, which a catalog registers together with its `actualyze` provider,
  * so `/connect` does not offer two Actualyze entries. The config provider
  * plugin runs after external plugins and merges config settings key by key
- * over the built-in record, so an explicit `settings.baseURL` wins.
+ * over the built-in record, so an explicit `settings.baseURL` wins over the
+ * base URL the record starts from: `ACTUALYZE_OPENAI_BASE_URL` when it holds
+ * an http(s) URL, else the production endpoint.
  *
  * An earlier plugin's `actualyze` provider with `activation: "auto"` and no
  * `integrationID` of its own is gated by the `actualyze` integration, so the
@@ -28,6 +30,7 @@
 import type { Plugin } from "@opencode/plugin";
 import {
   ACTUALYZE_BASE_URL,
+  ACTUALYZE_BASE_URL_ENV,
   ACTUALYZE_ENV,
   ACTUALYZE_INTEGRATION_ID,
   ACTUALYZE_NAME,
@@ -70,7 +73,40 @@ export function registerActualyzeIntegration(editor: IntegrationEditor): void {
   }
 }
 
-export function actualyzeProviderInfo(): ProviderInfo {
+/**
+ * A base URL without trailing slashes, fragment, or credentials, with the
+ * origin as `URL` serializes it (lowercase scheme and host, no default
+ * port); undefined when it is not an http(s) URL.
+ */
+export function normalizeEndpointURL(value: string): string | undefined {
+  let url: URL;
+  try {
+    url = new URL(value.trim());
+  } catch {
+    return undefined;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
+  const path = url.pathname.replace(/\/+$/, "");
+  return `${url.origin}${path}${url.search}`;
+}
+
+/**
+ * The base URL the built-in provider starts from: `ACTUALYZE_OPENAI_BASE_URL`,
+ * normalized, when it holds an http(s) URL, else the production endpoint.
+ */
+export function actualyzeBaseURL(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): string {
+  const value = env[ACTUALYZE_BASE_URL_ENV];
+  return (
+    (value === undefined ? undefined : normalizeEndpointURL(value)) ??
+    ACTUALYZE_BASE_URL
+  );
+}
+
+export function actualyzeProviderInfo(
+  baseURL: string = ACTUALYZE_BASE_URL,
+): ProviderInfo {
   // Provider and integration IDs are branded strings in the host schema.
   return {
     id: ACTUALYZE_PROVIDER_ID as ProviderInfo["id"],
@@ -80,7 +116,7 @@ export function actualyzeProviderInfo(): ProviderInfo {
     name: ACTUALYZE_NAME,
     activation: "auto",
     package: ACTUALYZE_PACKAGE,
-    settings: { baseURL: ACTUALYZE_BASE_URL, probe: ACTUALYZE_PROBE_ID },
+    settings: { baseURL, probe: ACTUALYZE_PROBE_ID },
   };
 }
 
@@ -90,13 +126,17 @@ export function actualyzeProviderInfo(): ProviderInfo {
  */
 export type ActualyzeAddition = "added" | "existing" | "failed";
 
-/** Add the `actualyze` provider, with no models, unless one already exists. */
+/**
+ * Add the `actualyze` provider at `baseURL`, with no models, unless one
+ * already exists.
+ */
 export function addActualyzeProvider(
   editor: ProviderEditor,
+  baseURL: string = ACTUALYZE_BASE_URL,
 ): ActualyzeAddition {
   try {
     if (editor.get(ACTUALYZE_PROVIDER_ID)) return "existing";
-    editor.add({ info: actualyzeProviderInfo(), models: [] });
+    editor.add({ info: actualyzeProviderInfo(baseURL), models: [] });
     return "added";
   } catch {
     // Leave the catalog as it was rather than disable the plugin.

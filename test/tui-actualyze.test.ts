@@ -13,6 +13,7 @@ import {
   BUILT_IN_ENDPOINT,
   canEnterKey,
   createSessionTracker,
+  defaultEndpoint,
   deriveActualyzeState,
   displayOrigin,
   failureLink,
@@ -53,6 +54,7 @@ function record(
     discovering: false,
     lastAttemptAt: AT,
     nextRefreshAt: null,
+    held: false,
     credentialSource: "connection",
     credentialEpoch: 2,
     resultEpoch: 2,
@@ -149,6 +151,31 @@ describe("endpoint", () => {
         origin: undefined,
         customEndpoint: true,
       });
+  });
+
+  describe("while the provider is hidden", () => {
+    it("is the production endpoint without ACTUALYZE_OPENAI_BASE_URL or with an unusable one", () => {
+      expect(defaultEndpoint({})).toEqual(BUILT_IN_ENDPOINT);
+      expect(
+        defaultEndpoint({ ACTUALYZE_OPENAI_BASE_URL: "not a url" }),
+      ).toEqual(BUILT_IN_ENDPOINT);
+    });
+
+    it("is the run's origin, flagged custom, when ACTUALYZE_OPENAI_BASE_URL names another endpoint", () => {
+      expect(
+        defaultEndpoint({
+          ACTUALYZE_OPENAI_BASE_URL: "https://staging.example/openai/v1",
+        }),
+      ).toEqual({ origin: "https://staging.example", customEndpoint: true });
+    });
+
+    it("is not custom when ACTUALYZE_OPENAI_BASE_URL spells the production endpoint", () => {
+      expect(
+        defaultEndpoint({
+          ACTUALYZE_OPENAI_BASE_URL: "https://app.actualyze.ai/openai/v1/",
+        }),
+      ).toEqual(BUILT_IN_ENDPOINT);
+    });
   });
 
   it("shows the host for https and the full origin otherwise", () => {
@@ -379,6 +406,30 @@ describe("pending marker", () => {
 });
 
 describe("state", () => {
+  it("shows a held record as held instead of waiting for a discovery that cannot come", () => {
+    const waiting = {
+      lastGoodAt: null,
+      models: [],
+      credentialEpoch: 2,
+      resultEpoch: null,
+    };
+    for (const overrides of [
+      { held: true },
+      { held: true, ...waiting },
+      { held: true, credentialSource: "none" as const, ...waiting },
+      { held: true, failure: { kind: "timeout" as const, at: AT } },
+    ])
+      expect(rowOf({ payload: payload(record(overrides)) })).toBe("held");
+    // A saved key would otherwise wait for a check the hold never runs.
+    expect(
+      rowOf({
+        pending: marker("saved"),
+        payload: payload(record({ held: true, ...waiting })),
+      }),
+    ).toBe("held");
+    expect(rowOf({ payload: payload(record({ held: false })) })).toBe("ready");
+  });
+
   it("waits for the catalog before saying no key is connected", () => {
     // A settings.apiKey user has no connection; only the record tells them apart.
     expect(

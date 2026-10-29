@@ -1217,7 +1217,7 @@ async function runScenario(scenario, sizeName, theme, screenshotsDir) {
   const settled = await settledCatalog(state);
   if (
     check(
-      `${runName}: harness catalog passes the v5 validator`,
+      `${runName}: harness catalog passes the v6 validator`,
       settled?.payload !== undefined,
       `(HTTP ${settled?.status})`,
     )

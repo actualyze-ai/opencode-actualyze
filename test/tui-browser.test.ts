@@ -110,6 +110,7 @@ function record(
     discovering: false,
     lastAttemptAt: "2026-10-11T08:00:00.000Z",
     nextRefreshAt: null,
+    held: false,
     credentialSource: "connection",
     credentialEpoch: 1,
     resultEpoch: 1,
@@ -935,6 +936,12 @@ describe("projectBrowser notes for empty providers", () => {
         failure: { kind: "unreachable", at: "2026-10-11T08:00:00.000Z" },
       }),
       "No models yet; the model list failed",
+    ],
+    [
+      "a hold before any success",
+      group("p", []),
+      record("p", { held: true, lastGoodAt: null }),
+      "No models yet; restart OpenCode to discover them",
     ],
     [
       "a successful empty list",

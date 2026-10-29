@@ -112,6 +112,7 @@ function harness(providers: ProviderLike[], location = HERE): Harness {
     listProviders: async () => h.providers,
     activeCredential: async (id) => h.credentials.get(id),
     reload: () => h.reload(),
+    pluginListed: async () => true,
     events: () => ({
       [Symbol.asyncIterator]: () => ({
         next: () => new Promise<IteratorResult<HostEvent>>(() => {}),
