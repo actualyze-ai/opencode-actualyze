@@ -25,33 +25,20 @@ used `opencode-model-scout`, see
 
 ## Quick Start
 
-Actualyze needs no provider config. The plugin adds an `actualyze` provider
-for `https://app.actualyze.ai/openai/v1`, and it appears as soon as OpenCode
-has your API key.
-
 1. Install the plugin:
 
    ```bash
    opencode plugin add opencode-actualyze
    ```
 
-2. Add your Actualyze API key in one of these ways:
-   - In the TUI, run `/actualyze`, press `k`, and paste the key. You can also
-     run `/connect` and pick **Actualyze**.
-   - From a shell, run `opencode auth login actualyze`.
-   - Set `ACTUALYZE_API_KEY` on the background service and restart it:
+2. Connect your Actualyze API key, either way:
+   - From a shell, run `opencode auth login`, pick **Actualyze**, and paste
+     the key.
+   - In OpenCode, run `/actualyze`, press `k`, and paste the key.
 
-     ```bash
-     opencode service set env ACTUALYZE_API_KEY <key>
-     opencode service restart
-     ```
-
-     The service does not see variables exported in your shell (see
-     [The background service](#the-background-service-and-environment-variables)).
-
-3. The Actualyze models appear in the model picker once discovery finishes.
-   `/actualyze` shows whether the catalog answered for your key and, if it
-   did not, what to do next.
+Your Actualyze models then appear in the model picker. No provider config is
+needed. `/actualyze` shows whether the catalog answered for your key and, if
+it did not, what to do next.
 
 For a server other than Actualyze, see
 [Other OpenAI-Compatible Servers](#other-openai-compatible-servers).
@@ -75,8 +62,9 @@ The plugin adds this provider to OpenCode's catalog:
 
 It also registers an Actualyze integration, which is what `/connect` and
 `opencode auth login actualyze` offer. The integration takes a stored API key
-or the `ACTUALYZE_API_KEY` environment variable of the background service.
-Discovery and chat both use that key. The integration's ID is `actualyze`,
+or the `ACTUALYZE_API_KEY` environment variable of the background service (see
+[The background service](#the-background-service-and-environment-variables)
+for setting it). Discovery and chat both use that key. The integration's ID is `actualyze`,
 the same as the provider's, so a `providers.actualyze` config entry and
 `opencode auth login actualyze` both reach the integration the provider reads
 its key from.
