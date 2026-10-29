@@ -19,9 +19,7 @@ LM Studio, and KoboldCpp. The Ollama probe also covers llama.cpp and LocalAI.
 The Model Scout browser, `/modelscout`, lists every discovered model and
 where each value came from.
 
-The plugin requires OpenCode 2 and is tested against OpenCode 2.1.3. If you
-used `opencode-model-scout`, see
-[Moving from opencode-model-scout](#moving-from-opencode-model-scout).
+The plugin requires OpenCode 2 and is tested against OpenCode 2.1.3.
 
 ## Quick Start
 
@@ -958,45 +956,6 @@ relative `{file:}` path resolves against the directory of the config file.
 - **The output limit is 0.** No source reported one. OpenCode treats `0` as
   unknown and asks for up to 32,000 output tokens, fewer when the prompt
   leaves less room.
-
-## Moving from opencode-model-scout
-
-`opencode-actualyze` is the successor of `opencode-model-scout` and requires
-OpenCode 2. Remove the old package from your configuration and add the new
-one. `remove` takes the entry exactly as it is configured, including any
-version pin:
-
-```bash
-opencode plugin remove opencode-model-scout
-opencode plugin add opencode-actualyze
-```
-
-To do it by hand, replace the `opencode-model-scout` entry in the `plugins`
-array of `opencode.json` with `opencode-actualyze`; in object form, change
-its `package` field. An entry that points at a checkout of
-`opencode-model-scout` should point at the `dist` directory of an
-`opencode-actualyze` checkout instead (see
-[Running from a checkout](#running-from-a-checkout)). Keep only one of the
-two: each entry loads as a separate plugin.
-
-What changes:
-
-- **Plugin ID.** The plugin ID is now `opencode-actualyze`, so anything that
-  names the plugin by its ID needs the new one. That includes a client of
-  the plugin's RPC contract, which `opencode-actualyze/rpc` exports. Saved
-  discovery state starts fresh, because OpenCode keeps it under the plugin
-  ID; the discovered models appear again once the first discovery finishes,
-  usually within a few seconds.
-- **Commands.** The `/modelscout` browser keeps its name, and `/actualyze`
-  is added.
-- **Probe values.** A `settings.probe` value the plugin does not recognize
-  shows a warning in `/modelscout` and `/actualyze` that lists the accepted
-  values.
-- **Actualyze providers.** A provider entry that points at
-  `https://app.actualyze.ai/openai/v1` can be removed, because the built-in
-  `actualyze` provider covers it. Its models then appear under the
-  `actualyze` provider; connect your key with `/actualyze` or
-  `opencode auth login actualyze`.
 
 ## Contributing
 
