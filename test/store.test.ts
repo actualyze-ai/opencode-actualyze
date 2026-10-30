@@ -596,9 +596,9 @@ describe("sharedStore", () => {
     );
   });
 
-  it("does not reuse a store that opencode-model-scout left in the same process", () => {
+  it("does not reuse a store left under another store version's symbol", () => {
     const holder = globalThis as Record<symbol, unknown>;
-    const previous = Symbol.for("opencode-model-scout/discovery-store/v2");
+    const previous = Symbol.for("opencode-actualyze/discovery-store/v1");
     const current = holder[STORE_SYMBOL];
     const stale = createStore();
     holder[previous] = stale;
