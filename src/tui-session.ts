@@ -30,6 +30,7 @@ import {
   type PickerModel,
   type TypeFilter,
 } from "./tui-browser";
+import { HELD_ACTION } from "./tui-detail";
 import {
   collectModelGroups,
   type HostCatalog,
@@ -895,6 +896,13 @@ function startSession(
               : undefined;
           },
         });
+        return;
+      }
+      if (output.reason === "held") {
+        transient(
+          `Refresh skipped: OpenCode has not finished loading. ${HELD_ACTION}`,
+          "warn",
+        );
         return;
       }
       if (output.reason === "no-targets") {

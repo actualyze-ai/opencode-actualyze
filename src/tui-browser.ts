@@ -462,6 +462,8 @@ function noteText(
   if (hidden > 0)
     return `${hidden} embedding ${hidden === 1 ? "model" : "models"} hidden; f shows them`;
   if (record?.discovering) return "Checking the model list…";
+  if (record?.held && !record.lastGoodAt)
+    return "No models yet; restart OpenCode to discover them";
   if (record?.failure && !record.lastGoodAt)
     return "No models yet; the model list failed";
   if (record?.lastGoodAt) return "No models returned; r refreshes";

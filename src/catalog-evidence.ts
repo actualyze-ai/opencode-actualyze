@@ -10,7 +10,7 @@
  * reloaded or restarted; it identifies nothing outside that.
  */
 
-export const CATALOG_SCHEMA_VERSION = 5 as const;
+export const CATALOG_SCHEMA_VERSION = 6 as const;
 export const MAX_ID_LENGTH = 4096;
 export const MAX_PROVIDERS = 4096;
 export const MAX_MODELS_PER_PROVIDER = 100_000;
@@ -220,6 +220,12 @@ export interface CatalogProviderRecord {
    * once that has passed.
    */
   nextRefreshAt: string | null;
+  /**
+   * The server half started without confirmation that OpenCode finished
+   * loading plugins, so it starts no discovery for this target until
+   * OpenCode confirms it or restarts. Stored inventories are still served.
+   */
+  held: boolean;
   credentialSource: CredentialSource;
   /**
    * Incremented, per provider ID, whenever the target's resolved credential
@@ -655,6 +661,7 @@ const PROVIDER_KEYS = [
   "discovering",
   "lastAttemptAt",
   "nextRefreshAt",
+  "held",
   "credentialSource",
   "credentialEpoch",
   "resultEpoch",
@@ -684,6 +691,7 @@ function isProviderRecord(value: unknown): value is CatalogProviderRecord {
     !isPlainRecord(value) ||
     !hasExactKeys(value, PROVIDER_KEYS) ||
     typeof value.discovering !== "boolean" ||
+    typeof value.held !== "boolean" ||
     !isNullableTimestamp(value.lastAttemptAt) ||
     !isNullableTimestamp(value.nextRefreshAt) ||
     !isOneOf(CREDENTIAL_SOURCES, value.credentialSource) ||

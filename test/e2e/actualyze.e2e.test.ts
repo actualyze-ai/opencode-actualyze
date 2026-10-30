@@ -12,6 +12,9 @@ import type { Plugin } from "@opencode/plugin";
 import type { OpenCode } from "@opencode/sdk";
 import plugin from "../../src/server";
 import { actualyzeProviderInfo } from "../../src/actualyze";
+import { validateCatalogPayload } from "../../src/catalog-evidence";
+import { REPLACEMENT_WAIT_MS } from "../../src/refresher";
+import { ModelScoutRpc } from "../../src/rpc";
 
 const PRODUCTION_ORIGIN = "https://app.actualyze.ai";
 const PRODUCTION_BASE_URL = `${PRODUCTION_ORIGIN}/openai/v1`;
@@ -22,7 +25,16 @@ const CONNECTED_KEY = "actualyze-connected-key";
 const SHADOWED_SETTINGS_KEY = "actualyze-shadowed-settings-key";
 const STORED_KEY = "actualyze-stored-key";
 const ZERO_CONFIG_KEY = "actualyze-zero-config-key";
+const SLOW_LOAD_KEY = "actualyze-slow-load-key";
+const RUN_ORIGIN_KEY = "actualyze-run-origin-key";
+const RUN_ORIGIN_OVERRIDE_KEY = "actualyze-run-origin-override-key";
+const RELOAD_ENV_KEY = "actualyze-reload-env-key";
+const RELOAD_KEY = "actualyze-reload-connected-key";
+const HOLD_ENV_KEY = "actualyze-hold-env-key";
+const HOLD_KEY = "actualyze-hold-connected-key";
 const INTEGRATION_ID = "actualyze";
+/** How long the plugin listed after scout takes to set up. */
+const SLOW_SETUP_MS = 1_000;
 
 const MODELS = [
   {
@@ -38,12 +50,20 @@ const MODELS = [
 ];
 
 const authorizations: string[] = [];
+/** Every request the mock answered, with its path. */
+const requests: { path: string; authorization: string }[] = [];
+/** The Authorization header of every request addressed to the production origin. */
+const productionAuthorizations: string[] = [];
 let server: http.Server;
 let mockURL: string;
 
 function startMock(): Promise<void> {
   server = http.createServer((request, response) => {
     authorizations.push(String(request.headers.authorization ?? ""));
+    requests.push({
+      path: request.url ?? "",
+      authorization: String(request.headers.authorization ?? ""),
+    });
     const send = (status: number, body: unknown) => {
       response.writeHead(status, { "content-type": "application/json" });
       response.end(JSON.stringify(body));
@@ -85,6 +105,7 @@ beforeAll(async () => {
     if (key.startsWith("OPENCODE")) delete process.env[key];
   }
   delete process.env.ACTUALYZE_API_KEY;
+  delete process.env.ACTUALYZE_OPENAI_BASE_URL;
   process.env.HOME = path.join(root, "home");
   process.env.XDG_CONFIG_HOME = path.join(root, "config");
   process.env.XDG_DATA_HOME = path.join(root, "data");
@@ -97,6 +118,11 @@ beforeAll(async () => {
   globalThis.fetch = (input, init) => {
     const url = input instanceof Request ? input.url : String(input);
     if (!url.startsWith(PRODUCTION_ORIGIN)) return realFetch(input, init);
+    productionAuthorizations.push(
+      new Headers(
+        init?.headers ?? (input instanceof Request ? input.headers : undefined),
+      ).get("authorization") ?? "",
+    );
     const rewritten = `${mockURL}${url.slice(PRODUCTION_ORIGIN.length)}`;
     // A Request carries its own method, headers, and body.
     return realFetch(
@@ -117,12 +143,13 @@ async function createHost(
   name: string,
   providers: Record<string, unknown>,
   before: readonly Plugin.Plugin[] = [],
+  after: readonly Plugin.Plugin[] = [],
 ): Promise<{ host: OpenCode.Interface; location: { directory: string } }> {
   const directory = path.join(root, name);
   await mkdir(directory, { recursive: true });
   const { OpenCode } = await import("@opencode/sdk");
   const host = await OpenCode.create({
-    plugins: [...before, plugin],
+    plugins: [...before, plugin, ...after],
     models: { fetch: false },
     fs: { filewatcher: false },
     config: {
@@ -293,6 +320,324 @@ describe("Actualyze with ACTUALYZE_API_KEY and settings.apiKey", () => {
     expect(authorizations).toContain(`Bearer ${CONNECTED_KEY}`);
     expect(authorizations).not.toContain(`Bearer ${SHADOWED_SETTINGS_KEY}`);
   });
+});
+
+/**
+ * A plugin listed after scout that takes a while to set up. The host loads
+ * plugins one at a time and its config provider plugin after every external
+ * one, so until this setup returns, the provider list holds scout's
+ * built-in record without the configured settings merged over it.
+ */
+const slowPlugin = {
+  id: "slow-later-plugin",
+  async setup() {
+    await new Promise((resolve) => setTimeout(resolve, SLOW_SETUP_MS));
+  },
+} satisfies Plugin.Plugin;
+
+describe("Actualyze with a configured base URL while a later plugin loads", () => {
+  let host: OpenCode.Interface | undefined;
+  let location: { directory: string };
+
+  beforeAll(async () => {
+    process.env.ACTUALYZE_API_KEY = SLOW_LOAD_KEY;
+    ({ host, location } = await createHost(
+      "slow-later-plugin",
+      { actualyze: { settings: { baseURL: `${mockURL}/openai/v1` } } },
+      [],
+      [slowPlugin],
+    ));
+  });
+
+  afterAll(async () => {
+    await host?.close();
+    delete process.env.ACTUALYZE_API_KEY;
+  });
+
+  it("sends the key only to the configured base URL", async () => {
+    expect(await findModel(host!, location)).toBeDefined();
+    expect(authorizations).toContain(`Bearer ${SLOW_LOAD_KEY}`);
+    expect(productionAuthorizations).not.toContain(`Bearer ${SLOW_LOAD_KEY}`);
+  });
+});
+
+describe("Actualyze with ACTUALYZE_OPENAI_BASE_URL and ACTUALYZE_API_KEY", () => {
+  let host: OpenCode.Interface | undefined;
+  let location: { directory: string };
+
+  beforeAll(async () => {
+    process.env.ACTUALYZE_API_KEY = RUN_ORIGIN_KEY;
+    process.env.ACTUALYZE_OPENAI_BASE_URL = `${mockURL}/openai/v1/`;
+    ({ host, location } = await createHost("run-origin", {}));
+  });
+
+  afterAll(async () => {
+    await host?.close();
+    delete process.env.ACTUALYZE_API_KEY;
+    delete process.env.ACTUALYZE_OPENAI_BASE_URL;
+  });
+
+  it("points the built-in provider at that base URL and discovers there", async () => {
+    expect(await findProvider(host!, location)).toMatchObject({
+      integrationID: INTEGRATION_ID,
+      settings: { baseURL: `${mockURL}/openai/v1`, probe: "actualyze" },
+    });
+    expect(await findModel(host!, location)).toBeDefined();
+    expect(authorizations).toContain(`Bearer ${RUN_ORIGIN_KEY}`);
+    expect(productionAuthorizations).not.toContain(`Bearer ${RUN_ORIGIN_KEY}`);
+  });
+});
+
+describe("a configured base URL over ACTUALYZE_OPENAI_BASE_URL while a later plugin loads", () => {
+  let host: OpenCode.Interface | undefined;
+  let location: { directory: string };
+
+  beforeAll(async () => {
+    process.env.ACTUALYZE_API_KEY = RUN_ORIGIN_OVERRIDE_KEY;
+    // The mock answers 404 under this prefix, so only the configured base
+    // URL can list the model.
+    process.env.ACTUALYZE_OPENAI_BASE_URL = `${mockURL}/run-default/openai/v1`;
+    ({ host, location } = await createHost(
+      "run-origin-override",
+      { actualyze: { settings: { baseURL: `${mockURL}/openai/v1` } } },
+      [],
+      [slowPlugin],
+    ));
+  });
+
+  afterAll(async () => {
+    await host?.close();
+    delete process.env.ACTUALYZE_API_KEY;
+    delete process.env.ACTUALYZE_OPENAI_BASE_URL;
+  });
+
+  it("discovers only at the configured base URL", async () => {
+    expect(
+      await findProvider(host!, location, `${mockURL}/openai/v1`),
+    ).toMatchObject({ settings: { baseURL: `${mockURL}/openai/v1` } });
+    expect(await findModel(host!, location)).toBeDefined();
+    const sent = requests.filter(
+      (entry) => entry.authorization === `Bearer ${RUN_ORIGIN_OVERRIDE_KEY}`,
+    );
+    expect(sent.length).toBeGreaterThan(0);
+    expect(
+      sent.filter((entry) => entry.path.startsWith("/run-default/")),
+    ).toEqual([]);
+    expect(productionAuthorizations).not.toContain(
+      `Bearer ${RUN_ORIGIN_OVERRIDE_KEY}`,
+    );
+  });
+});
+
+/**
+ * Plugins and controls for a reload of scout that a plugin listed after it
+ * holds open: the reload stays between scout's setup and the config
+ * provider plugin's until `release()`.
+ */
+function gatedReload() {
+  /** Times of every `provider.updated` for the location, seen by a plugin listed before scout. */
+  const providerUpdates: number[] = [];
+  let observed: Plugin.Context | undefined;
+  let setups = 0;
+  let entered: () => void = () => {};
+  let release: () => void = () => {};
+
+  // Listed before scout, so a reload that starts at scout leaves it running.
+  const observer = {
+    id: "reload-observer",
+    async setup(context: Plugin.Context) {
+      observed = context;
+      void (async () => {
+        for await (const event of context.event.subscribe({}))
+          if (
+            event.type === "provider.updated" &&
+            event.location?.directory === context.location.directory
+          )
+            providerUpdates.push(Date.now());
+      })().catch(() => {});
+    },
+  } satisfies Plugin.Plugin;
+
+  // Listed after scout. Every setup after the first waits for `release`.
+  const gated = {
+    id: "gated-later-plugin",
+    async setup() {
+      setups += 1;
+      if (setups === 1) return;
+      await new Promise<void>((resolve) => {
+        release = resolve;
+        entered();
+      });
+    },
+  } satisfies Plugin.Plugin;
+
+  return {
+    providerUpdates,
+    before: [observer],
+    after: [gated],
+    /**
+     * Register scout again under its ID, which gives it a new revision, so
+     * the host restarts it and every plugin after it; resolves once the
+     * gated plugin's setup is waiting.
+     */
+    async reload(host: OpenCode.Interface): Promise<void> {
+      const reloading = new Promise<void>((resolve) => (entered = resolve));
+      await host.plugin({
+        id: plugin.id,
+        setup: (context) => plugin.setup(context),
+      });
+      await reloading;
+    },
+    release: () => release(),
+    /** Scout's `actualyze` record, read in process, which needs no finished activation. */
+    async record() {
+      const payload = validateCatalogPayload(
+        await observed?.rpc(ModelScoutRpc).catalog({}),
+      );
+      return payload?.providers.find((entry) => entry.id === "actualyze");
+    },
+  };
+}
+
+/** Remove every stored Actualyze credential, so later scenarios start without one. */
+async function removeStoredKeys(host: OpenCode.Interface | undefined) {
+  if (!host) return;
+  for (const credential of await host.credential.list()) {
+    if (credential.integrationID === INTEGRATION_ID)
+      await host.credential.remove({ credentialID: credential.id });
+  }
+}
+
+describe("a reload of scout with a key connected while a later plugin loads", () => {
+  let host: OpenCode.Interface | undefined;
+  let location: { directory: string };
+  const gate = gatedReload();
+
+  beforeAll(async () => {
+    process.env.ACTUALYZE_API_KEY = RELOAD_ENV_KEY;
+    ({ host, location } = await createHost(
+      "reload-with-key-change",
+      { actualyze: { settings: { baseURL: `${mockURL}/openai/v1` } } },
+      gate.before,
+      gate.after,
+    ));
+  });
+
+  afterAll(async () => {
+    gate.release();
+    await removeStoredKeys(host);
+    await host?.close();
+    delete process.env.ACTUALYZE_API_KEY;
+  });
+
+  it("sends the new key only to the configured base URL", async () => {
+    expect(await findModel(host!, location)).toBeDefined();
+    expect(authorizations).toContain(`Bearer ${RELOAD_ENV_KEY}`);
+    await gate.reload(host!);
+    const providerUpdates = gate.providerUpdates;
+    const release = gate.release;
+
+    const connectedAt = Date.now();
+    await host!.integration.connect.key({
+      integrationID: INTEGRATION_ID,
+      key: RELOAD_KEY,
+      location,
+    });
+    // The host publishes `provider.updated` for the credential change while
+    // the reload is still setting up plugins.
+    expect(
+      await eventually(
+        async () =>
+          providerUpdates.some((at) => at >= connectedAt) ? true : undefined,
+        5_000,
+      ),
+    ).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    expect(productionAuthorizations).not.toContain(`Bearer ${RELOAD_KEY}`);
+    release();
+
+    expect(
+      await eventually(
+        async () =>
+          requests.some(
+            (entry) =>
+              entry.path === "/openai/v1/models" &&
+              entry.authorization === `Bearer ${RELOAD_KEY}`,
+          )
+            ? true
+            : undefined,
+        45_000,
+      ),
+    ).toBe(true);
+    expect(productionAuthorizations).not.toContain(`Bearer ${RELOAD_KEY}`);
+  }, 90_000);
+});
+
+describe("a reload of scout that outlasts the plugin list rule", () => {
+  let host: OpenCode.Interface | undefined;
+  let location: { directory: string };
+  const gate = gatedReload();
+
+  beforeAll(async () => {
+    process.env.ACTUALYZE_API_KEY = HOLD_ENV_KEY;
+    ({ host, location } = await createHost(
+      "reload-past-list-rule",
+      { actualyze: { settings: { baseURL: `${mockURL}/openai/v1` } } },
+      gate.before,
+      gate.after,
+    ));
+  });
+
+  afterAll(async () => {
+    gate.release();
+    await removeStoredKeys(host);
+    await host?.close();
+    delete process.env.ACTUALYZE_API_KEY;
+  });
+
+  it("sends nothing anywhere until plugin.updated, then discovers at the configured base URL", async () => {
+    expect(await findModel(host!, location)).toBeDefined();
+    const sent = () => ({
+      mock: requests.length,
+      production: productionAuthorizations.length,
+    });
+    await gate.reload(host!);
+    const before = sent();
+
+    // The replacing instance takes the plugin list as the end of its
+    // activation only after REPLACEMENT_WAIT_MS, and is then held.
+    expect(
+      await eventually(
+        async () => ((await gate.record())?.held === true ? true : undefined),
+        REPLACEMENT_WAIT_MS + 10_000,
+      ),
+    ).toBe(true);
+    // A key change syncs again while held.
+    await host!.integration.connect.key({
+      integrationID: INTEGRATION_ID,
+      key: HOLD_KEY,
+      location,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    expect(sent()).toEqual(before);
+
+    gate.release();
+    expect(
+      await eventually(
+        async () =>
+          requests.some(
+            (entry) =>
+              entry.path === "/openai/v1/models" &&
+              entry.authorization === `Bearer ${HOLD_KEY}`,
+          )
+            ? true
+            : undefined,
+        15_000,
+      ),
+    ).toBe(true);
+    expect(productionAuthorizations.length).toBe(before.production);
+    expect((await gate.record())?.held).toBe(false);
+  }, 90_000);
 });
 
 /** Every integration that `/connect` would show as Actualyze. */

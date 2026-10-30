@@ -214,6 +214,7 @@ function record(
     discovering: false,
     lastAttemptAt: AT,
     nextRefreshAt: null,
+    held: false,
     credentialSource: "connection",
     credentialEpoch: 1,
     resultEpoch: 1,
@@ -624,6 +625,30 @@ describe("y", () => {
   });
 });
 
+describe("a hidden provider with ACTUALYZE_OPENAI_BASE_URL set", () => {
+  it("shows that endpoint as custom and links to it", async () => {
+    vi.stubEnv(
+      "ACTUALYZE_OPENAI_BASE_URL",
+      "https://staging.example/openai/v1",
+    );
+    try {
+      const h = harness();
+      await openedAt(h, /Connect an Actualyze API key/);
+      await vi.waitFor(() =>
+        expect(line(h.root(), "modelscout-header")).toMatch(
+          /custom endpoint\s+staging\.example/,
+        ),
+      );
+      h.press("y");
+      expect(h.copied).toHaveBeenLastCalledWith(
+        "https://staging.example/account/settings?tab=security",
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
+
 describe("a base URL that is not http(s)", () => {
   it("offers no links and never falls back to production", async () => {
     const h = harness({
@@ -962,6 +987,56 @@ describe("an unknown configured probe", () => {
       ...shownRows(h.root(), "modelscout-banner"),
     ].join("\n");
     expect(shown).not.toMatch(/unknown probe/i);
+  });
+});
+
+describe("a held record", () => {
+  const shownRows = (root: unknown, id: string): string[] =>
+    (findNodeById(root, id)?.children ?? [])
+      .filter(visible)
+      .map((child) => textOf(child).trimEnd());
+  /** Card rows as running text: the bar dropped and wrapped rows joined. */
+  const cardText = (rows: readonly string[]): string =>
+    rows
+      .map((row) => row.replace(/^▌ ?/, ""))
+      .join(" ")
+      .replace(/\s+/g, " ");
+
+  it("says OpenCode has not finished loading and that a restart refreshes models, in place of the list", async () => {
+    const h = harness({
+      ...READY,
+      catalog: payload(
+        record({
+          held: true,
+          lastGoodAt: null,
+          models: [],
+          resultEpoch: null,
+        }),
+      ),
+      hostModels: [],
+    });
+    await openedAt(h, /Restart OpenCode to refresh models/);
+    expect(line(h.root(), "modelscout-status")).toMatch(
+      /^▲ Waiting for OpenCode to finish loading · key "Laptop"(?! · \d+ models?)/,
+    );
+    expect(cardText(pane(h.root()).split("\n"))).toContain(
+      "OpenCode has not reported that its plugins finished loading, so Model Scout sends no requests.",
+    );
+    expect(pane(h.root())).not.toMatch(/Checking|Waiting for discovery/);
+  });
+
+  it("keeps the stored models listed under the notice", async () => {
+    const h = harness({ ...READY, catalog: payload(record({ held: true })) });
+    await h.open();
+    await vi.waitFor(() =>
+      expect(line(h.root(), "modelscout-status")).toMatch(
+        /^▲ Waiting for OpenCode to finish loading · key "Laptop" · 1 model/,
+      ),
+    );
+    expect(cardText(shownRows(h.root(), "modelscout-banner"))).toContain(
+      "Restart OpenCode to refresh models",
+    );
+    expect(pane(h.root())).toContain("Claude Haiku");
   });
 });
 

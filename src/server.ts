@@ -5,7 +5,8 @@
  * Actualyze integration, the provider and model transforms, and the RPC
  * contract, and starts the refresher without awaiting any network I/O:
  * plugins activate one at a time, so an awaited fetch here would delay
- * every later plugin.
+ * every later plugin. The refresher reads providers only once the host has
+ * finished that activation.
  *
  * All `@opencode/*` imports must stay type-only, because the host throws if
  * a plugin loads `@opencode/plugin` or `effect` from its own `node_modules`.
@@ -25,7 +26,7 @@ import {
   type RefresherHost,
 } from "./refresher";
 import { sharedStore } from "./store";
-import { registerActualyzeIntegration } from "./actualyze";
+import { actualyzeBaseURL, registerActualyzeIntegration } from "./actualyze";
 import {
   createModelTransform,
   createProviderTransform,
@@ -55,6 +56,12 @@ async function activeCredential(
         : `env:${connection.name}`,
     key: value.key,
   };
+}
+
+async function pluginListed(context: Context): Promise<boolean> {
+  return (await context.plugin.list()).data.some(
+    (entry) => entry.id === PLUGIN_ID,
+  );
 }
 
 async function* hostEvents(
@@ -90,7 +97,9 @@ const plugin = {
     }
 
     await context.integration.transform(registerActualyzeIntegration);
-    await context.provider.transform(createProviderTransform(state));
+    await context.provider.transform(
+      createProviderTransform(state, actualyzeBaseURL()),
+    );
     await context.model.transform(createModelTransform(state));
 
     // The RPC registration, which emits events, exists only after the
@@ -105,6 +114,7 @@ const plugin = {
       activeCredential: (integrationID) =>
         activeCredential(context, integrationID),
       reload: () => context.model.reload(),
+      pluginListed: () => pluginListed(context),
       events: (signal) => hostEvents(context, signal),
       emitUpdated: async (completedAt) => {
         await rpc.emitUpdated?.(completedAt);

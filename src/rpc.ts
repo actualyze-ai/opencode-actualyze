@@ -30,7 +30,7 @@ export interface RefreshInput {
 }
 
 /** Why a `refresh` request started or joined no discovery. */
-export type RefreshRejection = "throttled" | "no-targets";
+export type RefreshRejection = "throttled" | "no-targets" | "held";
 
 /** Output of the `refresh` method. */
 export interface RefreshOutput {
@@ -40,7 +40,8 @@ export interface RefreshOutput {
    * Set when `accepted` is false: `throttled` when no selected target may
    * start discovery before its record's `nextRefreshAt` (the latest start
    * was less than a minute ago, or the server's retry hint has not passed),
-   * `no-targets` when no resolved discovery target matched the request.
+   * `no-targets` when no resolved discovery target matched the request,
+   * `held` when the instance is held (every record then carries `held`).
    */
   reason?: RefreshRejection;
 }
@@ -119,7 +120,10 @@ export const ModelScoutRpc = {
         type: "object",
         properties: {
           accepted: { type: "boolean" },
-          reason: { type: "string", enum: ["throttled", "no-targets"] },
+          reason: {
+            type: "string",
+            enum: ["throttled", "no-targets", "held"],
+          },
         },
         required: ["accepted"],
         additionalProperties: false,

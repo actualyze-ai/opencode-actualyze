@@ -6,12 +6,14 @@ import type {
   ProviderInventory,
 } from "../src/discover";
 import {
+  ACTIVATION_PROBE_MS,
   createRefresher,
   DEFAULT_REFRESH_INTERVAL_MS,
   DEFAULT_TIMEOUT_MS,
   loadPersisted,
   readOptions,
   readPersisted,
+  REPLACEMENT_WAIT_MS,
   STORAGE_PREFIX,
   toPersisted,
   type HostEvent,
@@ -71,6 +73,8 @@ interface Harness {
   emitted: string[];
   persisted: Map<string, PersistedBinding>;
   listCalls: () => number;
+  /** What the host's plugin list answers about this plugin. */
+  pluginListed: boolean;
 }
 
 function harness(providers: ProviderLike[], location = HERE): Harness {
@@ -81,6 +85,7 @@ function harness(providers: ProviderLike[], location = HERE): Harness {
     emitted: [] as string[],
     persisted: new Map<string, PersistedBinding>(),
     calls: 0,
+    pluginListed: false,
   };
   const host: RefresherHost = {
     location,
@@ -90,6 +95,7 @@ function harness(providers: ProviderLike[], location = HERE): Harness {
     },
     activeCredential: async (id) => state.credentials.get(id),
     reload: state.reload,
+    pluginListed: async () => state.pluginListed,
     events: () => ({
       [Symbol.asyncIterator]: () => ({
         next: () => new Promise<IteratorResult<HostEvent>>(() => {}),
@@ -116,6 +122,12 @@ function harness(providers: ProviderLike[], location = HERE): Harness {
     emitted: state.emitted,
     persisted: state.persisted,
     listCalls: () => state.calls,
+    get pluginListed() {
+      return state.pluginListed;
+    },
+    set pluginListed(value) {
+      state.pluginListed = value;
+    },
   };
 }
 
@@ -506,17 +518,461 @@ describe("updated event", () => {
   });
 });
 
+describe("activation", () => {
+  const ok = async (_target: DiscoveryTarget) => ({
+    ok: true as const,
+    inventory: inventory(["m"]),
+  });
+  const actualyze = (baseURL: string) =>
+    provider(
+      "actualyze",
+      { baseURL, probe: "actualyze" },
+      { integrationID: "actualyze" },
+    );
+
+  /** A harness whose `actualyze` target resolves to an integration key. */
+  function started(providers: ProviderLike[], listed: boolean) {
+    vi.useFakeTimers();
+    const h = harness(providers);
+    h.pluginListed = listed;
+    h.credentials.set("actualyze", { connection: "env:K", key: "run-key" });
+    const discover = vi.fn(ok);
+    const s = setup(h, discover);
+    s.refresher.start();
+    return { h, discover, ...s };
+  }
+
+  it("reads no provider list before the host's activation ends, whatever triggers", async () => {
+    const { h, discover, refresher } = started([provider("local")], false);
+    await vi.advanceTimersByTimeAsync(100);
+    refresher.handleEvent({ type: "provider.updated", location: HERE });
+    refresher.handleEvent({ type: "config.updated", location: HERE });
+    refresher.handleEvent({ type: "credential.updated" });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(refresher.refresh()).toEqual({
+      accepted: false,
+      reason: "no-targets",
+    });
+    expect(h.listCalls()).toBe(0);
+    expect(discover).not.toHaveBeenCalled();
+    refresher.dispose();
+  });
+
+  it("discovers only the base URL the provider has once plugin.updated arrives", async () => {
+    const configured = "http://staging.example/openai/v1";
+    const { h, discover, refresher } = started(
+      [actualyze("https://app.actualyze.ai/openai/v1")],
+      false,
+    );
+    await vi.advanceTimersByTimeAsync(100);
+    // The config provider plugin merges the configured settings at the end
+    // of the activation.
+    h.providers = [actualyze(configured)];
+    refresher.handleEvent({ type: "plugin.updated", location: HERE });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(discover).toHaveBeenCalledTimes(1);
+    expect(discover.mock.calls[0][0]).toMatchObject({
+      baseURL: configured,
+      apiKey: "run-key",
+    });
+    refresher.dispose();
+  });
+
+  it("ignores plugin.updated from another location or without one", async () => {
+    const { h, refresher } = started([provider("local")], false);
+    refresher.handleEvent({
+      type: "plugin.updated",
+      location: { directory: "/projects/b" },
+    });
+    refresher.handleEvent({ type: "plugin.updated" });
+    await vi.advanceTimersByTimeAsync(ACTIVATION_PROBE_MS - 1);
+    expect(h.listCalls()).toBe(0);
+    refresher.dispose();
+  });
+
+  it("starts once the host's plugin list first has the plugin, without an event", async () => {
+    const { h, discover, refresher } = started([provider("local")], false);
+    await vi.advanceTimersByTimeAsync(ACTIVATION_PROBE_MS * 2);
+    expect(h.listCalls()).toBe(0);
+    h.pluginListed = true;
+    await vi.advanceTimersByTimeAsync(ACTIVATION_PROBE_MS * 4);
+    expect(h.listCalls()).toBe(1);
+    expect(discover).toHaveBeenCalledTimes(1);
+    expect(refresher.catalog().providers[0]?.held).toBe(false);
+    refresher.dispose();
+  });
+
+  it("does not count provider.updated during a first activation", async () => {
+    const { h, refresher } = started([provider("local")], false);
+    await vi.advanceTimersByTimeAsync(0);
+    refresher.handleEvent({ type: "provider.updated", location: HERE });
+    await vi.advanceTimersByTimeAsync(ACTIVATION_PROBE_MS - 1);
+    expect(h.listCalls()).toBe(0);
+    refresher.dispose();
+  });
+
+  describe("when the plugin list already has the plugin at start", () => {
+    it("does not count provider.updated, which a credential change publishes mid-reload", async () => {
+      const { h, refresher } = started([provider("local")], true);
+      await vi.advanceTimersByTimeAsync(0);
+      refresher.handleEvent({ type: "provider.updated", location: HERE });
+      refresher.handleEvent({ type: "credential.switched" });
+      await vi.advanceTimersByTimeAsync(REPLACEMENT_WAIT_MS - 1);
+      expect(h.listCalls()).toBe(0);
+      refresher.dispose();
+    });
+
+    it("starts on plugin.updated at this location", async () => {
+      const { h, refresher } = started([provider("local")], true);
+      await vi.advanceTimersByTimeAsync(0);
+      refresher.handleEvent({ type: "plugin.updated", location: HERE });
+      await vi.advanceTimersByTimeAsync(10);
+      expect(h.listCalls()).toBe(1);
+      refresher.dispose();
+    });
+
+    it("takes the plugin list alone as the end only after the replacement wait, and then holds discovery", async () => {
+      const { h, discover, refresher } = started([provider("local")], true);
+      await vi.advanceTimersByTimeAsync(REPLACEMENT_WAIT_MS - 1);
+      expect(h.listCalls()).toBe(0);
+      // The next read of the plugin list comes at most one capped wait later.
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(h.listCalls()).toBe(1);
+      expect(discover).not.toHaveBeenCalled();
+      expect(refresher.catalog().providers[0]?.held).toBe(true);
+      refresher.dispose();
+    });
+  });
+
+  describe("when the plugin list read at start fails", () => {
+    function failingFirstRead() {
+      vi.useFakeTimers();
+      const h = harness([provider("local")]);
+      const reads = vi
+        .spyOn(h.host, "pluginListed")
+        .mockRejectedValueOnce(new Error("unavailable"));
+      const discover = vi.fn(ok);
+      const { refresher } = setup(h, discover);
+      refresher.start();
+      return { h, reads, discover, refresher };
+    }
+
+    it("does not count provider.updated", async () => {
+      const { h, refresher } = failingFirstRead();
+      h.pluginListed = true;
+      await vi.advanceTimersByTimeAsync(0);
+      refresher.handleEvent({ type: "provider.updated", location: HERE });
+      await vi.advanceTimersByTimeAsync(10);
+      expect(h.listCalls()).toBe(0);
+      refresher.dispose();
+    });
+
+    it("starts fully once the list gains the plugin after a read without it", async () => {
+      const { h, discover, refresher } = failingFirstRead();
+      // The read after the failed one finds no entry: a first activation.
+      await vi.advanceTimersByTimeAsync(ACTIVATION_PROBE_MS);
+      expect(h.listCalls()).toBe(0);
+      h.pluginListed = true;
+      await vi.advanceTimersByTimeAsync(ACTIVATION_PROBE_MS * 2 + 10);
+      expect(h.listCalls()).toBe(1);
+      expect(discover).toHaveBeenCalledTimes(1);
+      expect(refresher.catalog().providers[0]?.held).toBe(false);
+      refresher.dispose();
+    });
+
+    it("waits out the replacement wait and holds discovery when the first answer already has the plugin", async () => {
+      const { h, reads, discover, refresher } = failingFirstRead();
+      h.pluginListed = true;
+      await vi.advanceTimersByTimeAsync(REPLACEMENT_WAIT_MS - 1);
+      expect(reads.mock.calls.length).toBeGreaterThan(2);
+      expect(h.listCalls()).toBe(0);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(h.listCalls()).toBe(1);
+      expect(discover).not.toHaveBeenCalled();
+      refresher.dispose();
+    });
+  });
+
+  it("stops reading the plugin list once disposed", async () => {
+    const { h, refresher } = started([provider("local")], false);
+    const reads = vi.spyOn(h.host, "pluginListed");
+    await vi.advanceTimersByTimeAsync(0);
+    refresher.dispose();
+    const before = reads.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(reads.mock.calls.length).toBe(before);
+  });
+
+  it("keeps the periodic refresh waiting until activation", async () => {
+    vi.useFakeTimers();
+    const h = harness([provider("local")]);
+    const { refresher } = setup(h, vi.fn(ok), createStore(), {
+      timeoutMs: 15_000,
+      refreshIntervalMs: 60_000,
+    });
+    refresher.start();
+    await vi.advanceTimersByTimeAsync(60_000 * 2 + 10);
+    expect(h.listCalls()).toBe(0);
+    refresher.dispose();
+  });
+});
+
+describe("while held", () => {
+  const ok = async (_target: DiscoveryTarget) => ({
+    ok: true as const,
+    inventory: inventory(["fresh"]),
+  });
+
+  /**
+   * A refresher that elapsed time alone activated: the host's plugin list
+   * had the plugin at start and no plugin.updated came.
+   */
+  async function heldRefresher(
+    h: Harness,
+    store: DiscoveryStore = createStore(),
+    refreshIntervalMs = 600_000,
+  ) {
+    h.pluginListed = true;
+    const discover = vi.fn(ok);
+    const s = setup(h, discover, store, {
+      timeoutMs: 15_000,
+      refreshIntervalMs,
+    });
+    s.refresher.start();
+    await vi.advanceTimersByTimeAsync(REPLACEMENT_WAIT_MS + 5_000);
+    expect(h.listCalls()).toBeGreaterThan(0);
+    return { discover, ...s };
+  }
+
+  it("starts no discovery from a sync, the interval, a credential event, or RPC refresh", async () => {
+    vi.useFakeTimers();
+    const h = harness([
+      provider("local"),
+      provider(
+        "via-acme",
+        { baseURL: "http://acme/v1" },
+        { integrationID: "acme" },
+      ),
+    ]);
+    h.credentials.set("acme", { connection: "credential:c1", key: "k1" });
+    const { discover, refresher } = await heldRefresher(
+      h,
+      createStore(),
+      60_000,
+    );
+
+    await refresher.sync();
+    let calls = h.listCalls();
+    await vi.advanceTimersByTimeAsync(60_000 + 10);
+    expect(h.listCalls()).toBeGreaterThan(calls);
+
+    calls = h.listCalls();
+    h.credentials.set("acme", { connection: "credential:c2", key: "k2" });
+    refresher.handleEvent({
+      type: "credential.switched",
+      data: { integrationID: "acme", credentialID: "c2" },
+    });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(h.listCalls()).toBeGreaterThan(calls);
+
+    expect(refresher.refresh()).toEqual({ accepted: false, reason: "held" });
+    expect(refresher.refresh("via-acme")).toEqual({
+      accepted: false,
+      reason: "held",
+    });
+    expect(discover).not.toHaveBeenCalled();
+    refresher.dispose();
+  });
+
+  it("holds a keyless target too", async () => {
+    vi.useFakeTimers();
+    const h = harness([provider("free", { baseURL: "http://free/v1" })]);
+    const { discover, refresher } = await heldRefresher(h);
+    expect(refresher.catalog().providers[0]).toMatchObject({
+      id: "free",
+      credentialSource: "none",
+      held: true,
+    });
+    expect(refresher.refresh("free")).toEqual({
+      accepted: false,
+      reason: "held",
+    });
+    expect(discover).not.toHaveBeenCalled();
+    refresher.dispose();
+  });
+
+  it("reports every record held in a complete catalog", async () => {
+    vi.useFakeTimers();
+    const h = harness([provider("local")]);
+    const { refresher } = await heldRefresher(h);
+    const payload = refresher.catalog();
+    expect(validateCatalogPayload(payload)).toBeDefined();
+    expect(payload.status).toBe("complete");
+    expect(payload.providers).toEqual([
+      expect.objectContaining({
+        id: "local",
+        held: true,
+        discovering: false,
+        lastGoodAt: null,
+      }),
+    ]);
+    refresher.dispose();
+  });
+
+  it("lifts on a located plugin.updated, and discovery runs", async () => {
+    vi.useFakeTimers();
+    const h = harness([provider("local")]);
+    const store = createStore();
+    const { discover, refresher, state } = await heldRefresher(h, store);
+    refresher.handleEvent({ type: "plugin.updated" });
+    refresher.handleEvent({
+      type: "plugin.updated",
+      location: { directory: "/projects/b" },
+    });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(discover).not.toHaveBeenCalled();
+
+    refresher.handleEvent({ type: "plugin.updated", location: HERE });
+    await vi.advanceTimersByTimeAsync(10);
+    await store.settled(keyOf(h.providers[0]));
+    await vi.advanceTimersByTimeAsync(10);
+    expect(discover).toHaveBeenCalledTimes(1);
+    expect(state.active.get("local")?.inventory.models).toEqual([
+      { id: "fresh" },
+    ]);
+    expect(refresher.catalog().providers[0]?.held).toBe(false);
+    refresher.dispose();
+  });
+
+  describe("when plugin.updated ends it", () => {
+    const A = "http://a/v1";
+    const B = "http://b/v1";
+    const at = (baseURL: string) =>
+      provider("local", { baseURL, apiKey: "settings-key" });
+    const discovered = (discover: ReturnType<typeof vi.fn>): unknown[] =>
+      discover.mock.calls.map(
+        ([target]) => (target as DiscoveryTarget).baseURL,
+      );
+
+    it("refuses an RPC refresh that comes before the sync that follows it", async () => {
+      vi.useFakeTimers();
+      const h = harness([at(A)]);
+      const { discover, refresher } = await heldRefresher(h);
+      // The config provider plugin has applied B by the time OpenCode
+      // reports that loading finished; the targets still hold A.
+      h.providers = [at(B)];
+      refresher.handleEvent({ type: "plugin.updated", location: HERE });
+      expect(refresher.refresh()).toEqual({ accepted: false, reason: "held" });
+      expect(refresher.catalog().providers[0]?.held).toBe(true);
+      await vi.advanceTimersByTimeAsync(10);
+      expect(discovered(discover)).toEqual([B]);
+      expect(refresher.catalog().providers[0]?.held).toBe(false);
+      refresher.dispose();
+    });
+
+    it("starts no job for a sync that read the provider list before it", async () => {
+      vi.useFakeTimers();
+      const h = harness([at(A)]);
+      const { discover, refresher } = await heldRefresher(h);
+      let resolveLookup: (value: undefined) => void = () => {};
+      const lookup = vi
+        .spyOn(h.host, "activeCredential")
+        .mockImplementationOnce(
+          () => new Promise((resolve) => (resolveLookup = resolve)),
+        );
+      refresher.handleEvent({ type: "credential.updated" });
+      await vi.advanceTimersByTimeAsync(10);
+      // That sync has read A and waits for the credential lookup.
+      expect(lookup).toHaveBeenCalledTimes(1);
+      h.providers = [at(B)];
+      refresher.handleEvent({ type: "plugin.updated", location: HERE });
+      await vi.advanceTimersByTimeAsync(10);
+      resolveLookup(undefined);
+      await vi.advanceTimersByTimeAsync(10);
+      expect(discovered(discover)).toEqual([B]);
+      refresher.dispose();
+    });
+  });
+
+  describe("the active binding", () => {
+    const at = (baseURL: string, probe?: string) =>
+      provider("local", {
+        baseURL,
+        apiKey: "settings-key",
+        ...(probe ? { probe } : {}),
+      });
+
+    it("is the stored binding of the current store key", async () => {
+      vi.useFakeTimers();
+      const store = createStore();
+      const h = harness([at("http://a/v1")]);
+      seedFresh(store, at("http://a/v1"), new Date().toISOString(), ["a"]);
+      const { discover, refresher, state } = await heldRefresher(h, store);
+      expect(state.active.get("local")).toBe(
+        store.served(keyOf(at("http://a/v1"))),
+      );
+      expect(
+        servedBinding(eligibleTarget(at("http://a/v1"), new Set())!, state),
+      ).toBeDefined();
+      expect(discover).not.toHaveBeenCalled();
+      refresher.dispose();
+    });
+
+    it("is dropped when the target moves to an endpoint with no stored binding, and follows it back", async () => {
+      vi.useFakeTimers();
+      const store = createStore();
+      const h = harness([at("http://a/v1")]);
+      seedFresh(store, at("http://a/v1"), new Date().toISOString(), ["a"]);
+      const { refresher, state } = await heldRefresher(h, store);
+      expect(state.active.has("local")).toBe(true);
+
+      h.providers = [at("http://b/v1")];
+      await refresher.sync();
+      expect(state.active.has("local")).toBe(false);
+
+      seedFresh(store, at("http://b/v1"), new Date().toISOString(), ["b"]);
+      await refresher.sync();
+      expect(state.active.get("local")).toBe(
+        store.served(keyOf(at("http://b/v1"))),
+      );
+      refresher.dispose();
+    });
+
+    it("is dropped on a probe-only change, which would otherwise keep serving the old probe's models", async () => {
+      vi.useFakeTimers();
+      const store = createStore();
+      const h = harness([at("http://a/v1", "omlx")]);
+      seedFresh(store, at("http://a/v1", "omlx"), new Date().toISOString());
+      const { refresher, state } = await heldRefresher(h, store);
+      const omlx = state.active.get("local");
+      expect(omlx).toBeDefined();
+
+      h.providers = [at("http://a/v1", "vllm")];
+      await refresher.sync();
+      expect(state.active.has("local")).toBe(false);
+
+      h.providers = [at("http://a/v1", "omlx")];
+      await refresher.sync();
+      expect(state.active.get("local")).toBe(omlx);
+      refresher.dispose();
+    });
+  });
+});
+
 describe("events", () => {
   it("triggers on matching or unlocated events and ignores other locations", async () => {
     vi.useFakeTimers();
     const h = harness([]);
     const { refresher } = setup(h, vi.fn());
-    refresher.handleEvent({ type: "provider.updated", location: HERE });
+    refresher.handleEvent({ type: "plugin.updated", location: HERE });
     await vi.runAllTimersAsync();
     expect(h.listCalls()).toBe(1);
-    refresher.handleEvent({ type: "credential.updated" });
+    refresher.handleEvent({ type: "provider.updated", location: HERE });
     await vi.runAllTimersAsync();
     expect(h.listCalls()).toBe(2);
+    refresher.handleEvent({ type: "credential.updated" });
+    await vi.runAllTimersAsync();
+    expect(h.listCalls()).toBe(3);
     refresher.handleEvent({
       type: "provider.updated",
       location: { directory: "/projects/b" },
@@ -527,7 +983,7 @@ describe("events", () => {
     });
     refresher.handleEvent({ type: "model.updated", location: HERE });
     await vi.runAllTimersAsync();
-    expect(h.listCalls()).toBe(2);
+    expect(h.listCalls()).toBe(3);
   });
 
   it("stops serving every target of the switched integration on an unlocated credential switch", async () => {

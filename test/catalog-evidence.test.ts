@@ -92,6 +92,7 @@ function provider(id = "actualyze-dev"): CatalogProviderRecord {
     discovering: false,
     lastAttemptAt: AT,
     nextRefreshAt: null,
+    held: false,
     credentialSource: "connection",
     credentialEpoch: 0,
     resultEpoch: 0,
@@ -433,6 +434,7 @@ describe("validateCatalogPayload v5 fields", () => {
     "discovering",
     "lastAttemptAt",
     "nextRefreshAt",
+    "held",
     "credentialSource",
     "credentialEpoch",
     "resultEpoch",
@@ -468,6 +470,7 @@ describe("validateCatalogPayload v5 fields", () => {
   it.each([
     ["an unknown credential source", { credentialSource: "env" }],
     ["a string discovering flag", { discovering: "true" }],
+    ["a string held flag", { held: "true" }],
     ["a negative credentialEpoch", { credentialEpoch: -1 }],
     ["a fractional credentialEpoch", { credentialEpoch: 1.5 }],
     ["a resultEpoch above credentialEpoch", { resultEpoch: 1 }],

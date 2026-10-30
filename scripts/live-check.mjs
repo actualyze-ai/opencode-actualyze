@@ -418,7 +418,7 @@ async function checkRpc(state) {
   )
     return;
   const payload = validateCatalogPayload(json?.output);
-  if (!check("catalog payload passes the strict v5 validator", payload)) return;
+  if (!check("catalog payload passes the strict v6 validator", payload)) return;
   equalField("catalog builtIn.actualyze", payload.builtIn.actualyze, "managed");
   for (const [id, count] of [
     ...(actualyzeList ? [[ACTUALYZE, actualyzeList.length]] : []),

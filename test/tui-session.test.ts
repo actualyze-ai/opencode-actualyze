@@ -280,6 +280,7 @@ function providerRecord(
     discovering: false,
     lastAttemptAt: GENERATED_AT,
     nextRefreshAt: null,
+    held: false,
     credentialSource: "connection",
     credentialEpoch: 0,
     resultEpoch: 0,
@@ -1571,6 +1572,18 @@ describe("refresh", () => {
     h.press({ name: "r" });
     await vi.waitFor(() =>
       expect(line(root, "modelscout-notice")).toBe(notice),
+    );
+  });
+
+  it("explains a refresh refused while discovery is held", async () => {
+    const h = harness();
+    const { root } = await h.ready();
+    h.refresh.mockResolvedValueOnce({ accepted: false, reason: "held" });
+    h.press({ name: "r" });
+    await vi.waitFor(() =>
+      expect(line(root, "modelscout-notice")).toBe(
+        "Refresh skipped: OpenCode has not finished loading. Restart OpenCode to refresh models.",
+      ),
     );
   });
 

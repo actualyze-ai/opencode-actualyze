@@ -113,6 +113,7 @@ function record(
     discovering: false,
     lastAttemptAt: AT,
     nextRefreshAt: null,
+    held: false,
     credentialSource: "connection",
     credentialEpoch: 1,
     resultEpoch: 1,
@@ -151,7 +152,7 @@ function roleOf(lines: readonly Line[], needle: string): string | undefined {
 }
 
 describe("failureLabel and failureSentences", () => {
-  // Every v5 failure kind, with the header label and the detail headline it gets.
+  // Every v6 failure kind, with the header label and the detail headline it gets.
   const kinds: readonly [
     ProviderFailureKind,
     number | undefined,
@@ -318,9 +319,30 @@ describe("providerStatus", () => {
       providerStatus(record({ failure: failure("rate-limited", 429) }))?.text,
     ).toBe("▲ rate limited");
   });
+
+  it("shows that a held provider needs a restart, with or without a result", () => {
+    for (const held of [
+      record({ held: true }),
+      record({ held: true, lastGoodAt: null, resultEpoch: null }),
+      record({ held: true, failure: failure("timeout") }),
+    ])
+      expect(providerStatus(held)).toEqual({
+        text: "▲ restart needed",
+        role: "warn",
+      });
+  });
 });
 
 describe("needsAttention", () => {
+  it("is true for a held provider, current or not", () => {
+    expect(needsAttention(record({ held: true }))).toBe(true);
+    expect(
+      needsAttention(
+        record({ held: true, credentialEpoch: 2, resultEpoch: null }),
+      ),
+    ).toBe(true);
+  });
+
   it("is true only for a failure that belongs to the current credential", () => {
     expect(needsAttention(undefined)).toBe(false);
     expect(needsAttention(record())).toBe(false);
@@ -782,6 +804,19 @@ describe("providerDetailLines", () => {
     expect(detail(record({ discovering: true }))).toContain(
       "○ Checking the model list…",
     );
+  });
+
+  it("says a held provider waits for OpenCode and needs a restart, next to its stored models", () => {
+    const lines = detail(record({ held: true }));
+    expect(lines).toContain("▲ Waiting for OpenCode to finish loading");
+    expect(lines.join(" ")).toContain("Restart OpenCode to refresh models.");
+    expect(lines).toContain(
+      "Showing 1 model from the last good check, 10 min ago.",
+    );
+    const empty = detail(
+      record({ held: true, lastGoodAt: null, resultEpoch: null }),
+    );
+    expect(empty.join("\n")).not.toContain("last good check");
   });
 
   it.each([

@@ -94,6 +94,7 @@ function evidenceProvider(
     discovering: false,
     lastAttemptAt: "2026-10-11T08:00:00.000Z",
     nextRefreshAt: null,
+    held: false,
     credentialSource: "connection",
     credentialEpoch: 0,
     resultEpoch: 0,

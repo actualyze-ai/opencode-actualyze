@@ -14,9 +14,9 @@ import {
   actualyzeLink,
   actualyzeLinks,
   awaitingCheck,
-  BUILT_IN_ENDPOINT,
   canEnterKey,
   createSessionTracker,
+  defaultEndpoint,
   deriveActualyzeState,
   displayOrigin,
   failureLink,
@@ -59,6 +59,9 @@ import {
   type FrameKeyView,
 } from "./tui-browser";
 import {
+  HELD_HEADLINE,
+  HELD_REASON,
+  HELD_TITLE,
   NBSP,
   relativeAge,
   UNKNOWN_PROBE_EFFECT,
@@ -468,7 +471,7 @@ function viewState(session: Session, data: BrowserData): ViewState {
     connection,
     connected,
     endpoint: facts
-      ? (facts.provider?.endpoint ?? BUILT_IN_ENDPOINT)
+      ? (facts.provider?.endpoint ?? defaultEndpoint())
       : undefined,
     keyAllowed: keyAllowed(session),
   };
@@ -712,6 +715,23 @@ function statusSegments(
       );
     case "not-managed":
       return line("○", "muted", "Not managed by Model Scout", keyPart);
+    case "held": {
+      const count = chatModelCount(data);
+      return line(
+        "▲",
+        "warn",
+        HELD_HEADLINE,
+        keyPart,
+        hasInventory(record)
+          ? {
+              text: `${count} ${count === 1 ? "model" : "models"}`,
+              role: "muted",
+              drop: DROP_DETAIL,
+            }
+          : undefined,
+        agePart,
+      );
+    }
     case "checking":
       return line("○", "info", checkingHeadline(view.pending, now));
     case "no-key":
@@ -1178,6 +1198,29 @@ function describeRow(
         replaceCard(writer, [connectionsAction(), LINKS_ACTION, BROWSE_ACTION]),
       );
     }
+    case "held": {
+      const writer = new CardWriter("warn", width);
+      writer.title(HELD_TITLE);
+      writer.text(HELD_REASON);
+      if (hasInventory(record)) {
+        const count = chatModelCount(data);
+        const age = relativeAge(record?.lastGoodAt, now);
+        writer.text(
+          `Showing ${count} ${count === 1 ? "model" : "models"} from the last good check${age ? `, ${age}` : ""}. They keep working.`,
+          "muted",
+        );
+        return done({ placement: "above", lines: writer.lines });
+      }
+      writer.text("A key connected now is used after the restart.", "muted");
+      return done(
+        replaceCard(writer, [
+          keyAction(view),
+          LINKS_ACTION,
+          connectionsAction(),
+          BROWSE_ACTION,
+        ]),
+      );
+    }
     case "checking": {
       const writer = new CardWriter("info", width);
       writer.title("Key saved");
@@ -1377,7 +1420,7 @@ function openLinks(session: Session): void {
 
 function copyLink(session: Session, id: ActualyzeLinkID | undefined): void {
   const origin = session.facts
-    ? (session.facts.provider?.endpoint ?? BUILT_IN_ENDPOINT).origin
+    ? (session.facts.provider?.endpoint ?? defaultEndpoint()).origin
     : undefined;
   if (!origin || !id) return;
   session.tools?.copy(actualyzeLink(origin, id).url);

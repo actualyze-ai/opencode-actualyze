@@ -4,6 +4,7 @@ import type {
   CredentialSource,
   ProviderFailureKind,
 } from "./catalog-evidence";
+import { actualyzeBaseURL, normalizeEndpointURL } from "./actualyze";
 import {
   ACTUALYZE_BASE_URL,
   ACTUALYZE_INTEGRATION_ID,
@@ -16,7 +17,7 @@ import {
 /**
  * Where the Actualyze provider points, reduced to what the dialog shows:
  * the origin (no credentials, path, or query) and whether the base URL
- * differs from the built-in one. The full URL is never kept.
+ * differs from the production one. The full URL is never kept.
  */
 export interface ActualyzeEndpoint {
   /** Undefined when the configured base URL is not an http(s) URL. */
@@ -24,26 +25,9 @@ export interface ActualyzeEndpoint {
   readonly customEndpoint: boolean;
 }
 
-/**
- * A base URL without trailing slashes, fragment, or credentials, with the
- * origin as `URL` serializes it (lowercase scheme and host, no default
- * port); undefined when it is not an http(s) URL.
- */
-export function normalizeEndpointURL(value: string): string | undefined {
-  let url: URL;
-  try {
-    url = new URL(value.trim());
-  } catch {
-    return undefined;
-  }
-  if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
-  const path = url.pathname.replace(/\/+$/, "");
-  return `${url.origin}${path}${url.search}`;
-}
-
 const BUILT_IN_URL = normalizeEndpointURL(ACTUALYZE_BASE_URL);
 
-/** The built-in endpoint, also used while the provider is hidden for lack of a key. */
+/** The production endpoint, which a listed provider without a base URL points at. */
 export const BUILT_IN_ENDPOINT: ActualyzeEndpoint = {
   origin: new URL(ACTUALYZE_BASE_URL).origin,
   customEndpoint: false,
@@ -51,9 +35,10 @@ export const BUILT_IN_ENDPOINT: ActualyzeEndpoint = {
 
 /**
  * The endpoint of a listed Actualyze provider from its `settings.baseURL`.
- * A missing base URL means the built-in one; anything else that is not an
- * http(s) URL is a custom endpoint without an origin, so no link points at
- * production by mistake.
+ * A missing base URL means the production one; anything else that is not
+ * an http(s) URL is a custom endpoint without an origin, so no link points
+ * at production by mistake. Any base URL other than production's, including
+ * one that `ACTUALYZE_OPENAI_BASE_URL` supplied, is a custom endpoint.
  */
 export function actualyzeEndpoint(baseURL: unknown): ActualyzeEndpoint {
   if (baseURL === undefined || baseURL === null || baseURL === "")
@@ -67,6 +52,20 @@ export function actualyzeEndpoint(baseURL: unknown): ActualyzeEndpoint {
     origin: new URL(normalized).origin,
     customEndpoint: normalized !== BUILT_IN_URL,
   };
+}
+
+/**
+ * The endpoint the server half gives the built-in provider when no config
+ * sets one, from this process's `ACTUALYZE_OPENAI_BASE_URL`; shown while the
+ * provider is hidden for lack of a key. The terminal client's environment
+ * matches the server's when the client starts its own server, and a client
+ * of the background service sees only its own.
+ */
+export function defaultEndpoint(
+  env: Readonly<Record<string, string | undefined>> = globalThis.process?.env ??
+    {},
+): ActualyzeEndpoint {
+  return actualyzeEndpoint(actualyzeBaseURL(env));
 }
 
 export { displayOrigin } from "./format";
@@ -346,6 +345,7 @@ export type ActualyzeRow =
   | "unconfirmed"
   | "server-unavailable"
   | "not-managed"
+  | "held"
   | "checking"
   | "no-key"
   | "resolving"
@@ -374,7 +374,8 @@ export interface ActualyzeState {
 /**
  * The `/actualyze` state, highest priority first. Rows that show a
  * discovery result need a current record; every combination no other row
- * claims is `resolving`.
+ * claims is `resolving`. A `held` record gets no discovery until OpenCode
+ * restarts, so it outranks every row that waits for one.
  */
 export function deriveActualyzeState(inputs: ActualyzeInputs): ActualyzeState {
   const payload = inputs.server === "ready" ? inputs.payload : undefined;
@@ -387,6 +388,7 @@ export function deriveActualyzeState(inputs: ActualyzeInputs): ActualyzeState {
   if (pending?.phase === "unconfirmed") return at("unconfirmed");
   if (inputs.server === "unavailable") return at("server-unavailable");
   if (payload?.builtIn.actualyze === "foreign") return at("not-managed");
+  if (record?.held === true) return at("held");
   if (pending?.phase === "saved" && awaitingCheck(pending, payload))
     return at("checking");
   // While the catalog loads, a missing record says nothing yet: a
@@ -427,6 +429,7 @@ export function hasInventory(
 
 /** Rows that also show the header-auth notice when headers replace the key. */
 export const RESULT_ROWS: ReadonlySet<ActualyzeRow> = new Set<ActualyzeRow>([
+  "held",
   "discovering",
   "failure",
   "empty",
