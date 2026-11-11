@@ -9,6 +9,7 @@ import {
   ACTIVATION_PROBE_MS,
   createRefresher,
   DEFAULT_REFRESH_INTERVAL_MS,
+  DEFAULT_STARTUP_TIMEOUT_MS,
   DEFAULT_TIMEOUT_MS,
   loadPersisted,
   readOptions,
@@ -138,7 +139,11 @@ function setup(
     signal: AbortSignal,
   ) => Promise<DiscoveryResult>,
   store: DiscoveryStore = createStore(),
-  options = { timeoutMs: 15_000, refreshIntervalMs: 600_000 },
+  options = {
+    startupTimeoutMs: 0,
+    timeoutMs: 15_000,
+    refreshIntervalMs: 600_000,
+  },
 ) {
   const state = createTransformState();
   state.recorded = new Set();
@@ -197,6 +202,7 @@ describe("readOptions", () => {
     expect(readOptions({})).toEqual({
       timeoutMs: DEFAULT_TIMEOUT_MS,
       refreshIntervalMs: DEFAULT_REFRESH_INTERVAL_MS,
+      startupTimeoutMs: DEFAULT_STARTUP_TIMEOUT_MS,
     });
   });
 
@@ -213,9 +219,13 @@ describe("readOptions", () => {
   });
 
   it("ignores values that are not finite numbers", () => {
-    expect(readOptions({ timeoutMs: "5000", refreshIntervalMs: null })).toEqual(
-      readOptions({}),
-    );
+    expect(
+      readOptions({
+        timeoutMs: "5000",
+        refreshIntervalMs: null,
+        startupTimeoutMs: "1",
+      }),
+    ).toEqual(readOptions({}));
   });
 });
 
@@ -463,7 +473,11 @@ describe("sync", () => {
 });
 
 describe("updated event", () => {
-  const NO_INTERVAL = { timeoutMs: 15_000, refreshIntervalMs: 0 };
+  const NO_INTERVAL = {
+    startupTimeoutMs: 0,
+    timeoutMs: 15_000,
+    refreshIntervalMs: 0,
+  };
 
   it("announces stored bindings after the first sync, once the reload has finished", async () => {
     const h = harness([provider("local")]);
@@ -708,6 +722,7 @@ describe("activation", () => {
     const h = harness([provider("local")]);
     const { refresher } = setup(h, vi.fn(ok), createStore(), {
       timeoutMs: 15_000,
+      startupTimeoutMs: 0,
       refreshIntervalMs: 60_000,
     });
     refresher.start();
@@ -736,6 +751,7 @@ describe("while held", () => {
     const discover = vi.fn(ok);
     const s = setup(h, discover, store, {
       timeoutMs: 15_000,
+      startupTimeoutMs: 0,
       refreshIntervalMs,
     });
     s.refresher.start();
@@ -1633,6 +1649,7 @@ describe("catalog", () => {
     const discover = vi.fn();
     const { refresher } = setup(h, discover, store, {
       timeoutMs: 15_000,
+      startupTimeoutMs: 0,
       refreshIntervalMs: 0,
     });
     await refresher.sync();

@@ -78,6 +78,9 @@ import {
 
 export const DEFAULT_TIMEOUT_MS = 15_000;
 export const DEFAULT_REFRESH_INTERVAL_MS = 600_000;
+/** Startup discovery budget (#20, `startup.ts`); 0 disables the request. */
+export const DEFAULT_STARTUP_TIMEOUT_MS = 5_000;
+export const MAX_STARTUP_TIMEOUT_MS = 60_000;
 const MIN_TIMEOUT_MS = 1_000;
 const MAX_TIMEOUT_MS = 60_000;
 const MIN_INTERVAL_MS = 60_000;
@@ -113,6 +116,12 @@ export interface RefresherOptions {
   readonly timeoutMs: number;
   /** 0 disables periodic refresh. */
   readonly refreshIntervalMs: number;
+  /**
+   * Time budget for the startup discovery of a file-configured Actualyze
+   * entry (#20); 0 disables the network step and serves only stored
+   * inventories at start.
+   */
+  readonly startupTimeoutMs: number;
 }
 
 function finiteNumber(value: unknown): number | undefined {
@@ -127,7 +136,17 @@ export function readOptions(
 ): RefresherOptions {
   const timeout = finiteNumber(options?.timeoutMs);
   const interval = finiteNumber(options?.refreshIntervalMs);
+  const startup = finiteNumber(options?.startupTimeoutMs);
   return {
+    startupTimeoutMs:
+      startup === undefined
+        ? DEFAULT_STARTUP_TIMEOUT_MS
+        : startup <= 0
+          ? 0
+          : Math.min(
+              MAX_STARTUP_TIMEOUT_MS,
+              Math.max(MIN_TIMEOUT_MS, Math.round(startup)),
+            ),
     timeoutMs:
       timeout === undefined
         ? DEFAULT_TIMEOUT_MS

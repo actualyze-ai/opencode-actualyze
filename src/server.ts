@@ -13,19 +13,22 @@
  */
 import type { Plugin } from "@opencode/plugin";
 import { version as packageVersion } from "../package.json";
-import { PLUGIN_ID } from "./constants";
+import { ACTUALYZE_ENV, PLUGIN_ID } from "./constants";
 import { isPlainRecord } from "./catalog-evidence";
 import { ModelScoutRpc } from "./rpc";
 import {
   createRefresher,
   loadPersisted,
   readOptions,
+  STORAGE_PREFIX,
+  toPersisted,
   type ActiveCredential,
   type HostEvent,
   type PersistedBinding,
   type RefresherHost,
 } from "./refresher";
 import { sharedStore } from "./store";
+import { readConfiguredEntries, startupDiscovery } from "./startup";
 import { actualyzeBaseURL, registerActualyzeIntegration } from "./actualyze";
 import {
   createModelTransform,
@@ -94,6 +97,31 @@ const plugin = {
       await loadPersisted(context.storage, store);
     } catch {
       // Storage is a startup cache; discovery repopulates it.
+    }
+
+    // Startup discovery (#20): a file-configured Actualyze entry is served
+    // before the first model transform, from its stored inventory or from
+    // one bounded discovery against its own base URL, so a one-shot command
+    // resolves its model. The host is not involved and nothing is sent
+    // anywhere else (see startup.ts).
+    try {
+      await startupDiscovery({
+        entries: readConfiguredEntries({
+          env: process.env,
+          cwd: context.location.directory,
+        }),
+        store,
+        state,
+        timeoutMs: options.startupTimeoutMs,
+        integrationEnvKey: process.env[ACTUALYZE_ENV],
+        persist: (binding) =>
+          context.storage.set(
+            `${STORAGE_PREFIX}${binding.key}`,
+            storageValue(toPersisted(binding)),
+          ),
+      });
+    } catch {
+      // Startup discovery is best effort; the refresher discovers later.
     }
 
     await context.integration.transform(registerActualyzeIntegration);
