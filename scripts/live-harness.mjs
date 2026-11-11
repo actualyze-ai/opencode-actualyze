@@ -437,6 +437,105 @@ function harnessConfig(mode, { mockProbe, actualyzeProbe }) {
   };
 }
 
+/** The provider a launcher's run puts its models on and keeps OpenCode to. */
+export const RUN_PROVIDER = "actualyze-start";
+/** The model a run starts on; the Actualyze mock serves it. */
+export const RUN_MODEL = "gpt-oss-120b";
+/** The attribution header both launchers send; it carries no key. */
+const RUN_METADATA_HEADER = "X-Actualyze-Request-Metadata";
+const RUN_METADATA = JSON.stringify({ agent: "opencode", run_id: "harness" });
+
+/**
+ * OPENCODE_CONFIG_CONTENT of a run against the Actualyze mock, in the shape
+ * each launcher writes, with the plugin loaded from <repo>/dist in place of
+ * the npm package. `desktop` is Actualyze Desktop's V2 run document: the
+ * reserved provider with its key from ACTUALYZE_API_KEY, the plugin's
+ * `actualyze` provider on the same endpoint, and policies that deny every
+ * provider but the reserved one. `atlas` is the V1 document of Atlas's
+ * `aai start opencode`: `enabled_providers` holds only the reserved
+ * provider, whose `options.apiKey` reads ACTUALYZE_API_KEY.
+ */
+export function runConfigContent(kind) {
+  const model = `${RUN_PROVIDER}/${RUN_MODEL}`;
+  if (kind === "desktop")
+    return JSON.stringify({
+      plugins: [path.join(REPO, "dist")],
+      providers: {
+        [RUN_PROVIDER]: {
+          name: "Actualyze",
+          package: "@opencode/ai/providers/openai-compatible",
+          env: ["ACTUALYZE_API_KEY"],
+          settings: { baseURL: ACTUALYZE_MOCK_BASE_URL, probe: "actualyze" },
+          headers: { [RUN_METADATA_HEADER]: RUN_METADATA },
+          models: {
+            [RUN_MODEL]: {
+              name: RUN_MODEL,
+              limit: { context: 131_072, output: 32_768 },
+              capabilities: {
+                tools: true,
+                input: ["text"],
+                output: ["text"],
+                temperature: true,
+                reasoning: { supported: true },
+              },
+            },
+          },
+        },
+        [ACTUALYZE_PROVIDER]: {
+          settings: { baseURL: ACTUALYZE_MOCK_BASE_URL },
+        },
+      },
+      policies: [
+        { action: "provider.use", resource: "*", effect: "deny" },
+        { action: "provider.use", resource: RUN_PROVIDER, effect: "allow" },
+      ],
+      model,
+    });
+  if (kind === "atlas")
+    return JSON.stringify({
+      plugin: [path.join(REPO, "dist")],
+      enabled_providers: [RUN_PROVIDER],
+      disabled_providers: [],
+      provider: {
+        [RUN_PROVIDER]: {
+          npm: "@ai-sdk/openai",
+          name: "Actualyze",
+          options: {
+            baseURL: ACTUALYZE_MOCK_BASE_URL,
+            apiKey: "{env:ACTUALYZE_API_KEY}",
+            probe: "actualyze",
+            headers: { [RUN_METADATA_HEADER]: RUN_METADATA },
+          },
+          models: {
+            [RUN_MODEL]: {
+              name: RUN_MODEL,
+              limit: { context: 131_072, output: 32_768 },
+              modalities: { input: ["text"], output: ["text"] },
+              tool_call: true,
+              reasoning: true,
+              temperature: true,
+            },
+          },
+        },
+      },
+      model,
+      small_model: model,
+      agent: { title: { model }, compaction: { model } },
+    });
+  throw new Error(`unknown run kind: ${kind}`);
+}
+
+/**
+ * Environment of an OpenCode process in a run: the run document and the
+ * mock's synthetic `ok` key, which is all a run's process gets.
+ */
+export function runEnv(kind) {
+  return {
+    OPENCODE_CONFIG_CONTENT: runConfigContent(kind),
+    ACTUALYZE_API_KEY: mockKey("ok"),
+  };
+}
+
 /** The trimmed Actualyze key, or undefined when the file is unset, unreadable, or empty. */
 export async function readActualyzeKey() {
   if (!ACTUALYZE_API_KEY_FILE) return undefined;
@@ -526,8 +625,10 @@ function portRefuses(port) {
  * Start the mock and `opencode serve`. `actualyze` is `default`, `mock`, or
  * `refused`; `fresh` deletes the scratch HOME and XDG trees first;
  * `mockProbe` is the `settings.probe` of `mock-compat`, and `actualyzeProbe`
- * sets one on the `actualyze` entry when the config has that entry. Resolves
- * true when the server answers; messages go through `log`.
+ * sets one on the `actualyze` entry when the config has that entry. `run`
+ * (`desktop` or `atlas`) starts the server as that launcher's run on the
+ * Actualyze mock (see `runEnv`); it needs the default endpoint and no key
+ * file. Resolves true when the server answers; messages go through `log`.
  */
 export async function startHarness({
   actualyze = "default",
@@ -535,6 +636,7 @@ export async function startHarness({
   log = console.log,
   mockProbe = "auto",
   actualyzeProbe,
+  run,
 } = {}) {
   const existing = await readState();
   if (existing && (alive(existing.serverPid) || alive(existing.mockPid))) {
@@ -553,6 +655,15 @@ export async function startHarness({
   }
   if (actualyze !== "default" && ACTUALYZE_BASE_URL) {
     log(`ACTUALYZE_BASE_URL cannot be combined with the ${actualyze} endpoint`);
+    return false;
+  }
+  if (
+    run !== undefined &&
+    (actualyze !== "default" || ACTUALYZE_ENABLED || ACTUALYZE_BASE_URL)
+  ) {
+    log(
+      "a run takes only the mock's synthetic key: use the default endpoint without ACTUALYZE_API_KEY_FILE or ACTUALYZE_BASE_URL",
+    );
     return false;
   }
   if (actualyze === "refused" && !(await portRefuses(REFUSED_PORT))) {
@@ -616,6 +727,7 @@ export async function startHarness({
       env: isolatedEnv({
         OPENCODE_SERVER_PASSWORD: password,
         ...(actualyzeKey ? { ACTUALYZE_API_KEY: actualyzeKey } : {}),
+        ...(run === undefined ? {} : runEnv(run)),
       }),
     },
   );
@@ -633,6 +745,7 @@ export async function startHarness({
       baseURL:
         actualyze === "default" ? null : actualyzeConfigBaseURL(actualyze),
     },
+    run: run ?? null,
     startedAt: new Date().toISOString(),
   };
   writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), { mode: 0o600 });
@@ -687,6 +800,39 @@ export async function connectMockKey(state, key, label = "Harness mock") {
     { key, label },
   );
   return status;
+}
+
+/**
+ * Store a synthetic mock key on the `actualyze` integration the way Actualyze
+ * Desktop's Persistent setup does: `opencode auth import --standalone` with
+ * the credential on stdin, so the key is on no command line. Refuses any key
+ * that is not `aai_pat_mock_<scenario>`. Resolves to the exit code.
+ */
+export function importMockKey(key, label = "Harness import") {
+  if (mockScenarioForKey(key) === undefined)
+    throw new Error(`refusing a key that is not ${MOCK_KEY_PREFIX}<scenario>`);
+  return new Promise((resolve, reject) => {
+    const child = spawn(opencodeBinary(), ["auth", "import", "--standalone"], {
+      cwd: PROJECT,
+      env: isolatedEnv(),
+      stdio: ["pipe", "ignore", "ignore"],
+    });
+    child.once("error", reject);
+    child.once("exit", (code) => resolve(code));
+    // A process that exits before reading stdin reports through its exit code.
+    child.stdin.once("error", () => {});
+    child.stdin.end(
+      JSON.stringify([
+        {
+          id: "harness-import",
+          integrationID: ACTUALYZE_PROVIDER,
+          label,
+          active: true,
+          value: { type: "key", key },
+        },
+      ]),
+    );
+  });
 }
 
 async function status() {

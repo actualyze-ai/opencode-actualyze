@@ -35,6 +35,9 @@
 //     connect: "ok",                  // optional ACTUALYZE_MOCK_SCENARIOS key
 //     mockProbe: "auto",              // optional settings.probe of mock-compat
 //     actualyzeProbe: "actualyze",    // optional settings.probe of actualyze (mock or refused)
+//     run: "desktop" | "atlas",       // optional: start as that launcher's run on the
+//                                     // mock, with its synthetic ok key (default endpoint only)
+//     importKey: "ok",                // optional key stored with `opencode auth import`
 //     sizes: ["120x36"],              // optional subset of SIZES
 //     steps: [
 //       { command: "/modelscout" },   // type a slash command and press enter
@@ -71,13 +74,17 @@ import {
   CLI_CONFIG,
   LOGS,
   PROJECT,
+  RUN_MODEL,
+  RUN_PROVIDER,
   XDG,
   api,
   connectMockKey,
   envArgv,
+  importMockKey,
   isolatedEnv,
   mockKey,
   readState,
+  runEnv,
   startHarness,
   stopHarness,
 } from "./live-harness.mjs";
@@ -811,7 +818,110 @@ const SCENARIOS = [
       { waitGone: "ACTUALYZE" },
     ],
   },
+  {
+    name: "actualyze-persistent",
+    description:
+      "Actualyze Desktop's Persistent setup (a lasting key stored with opencode auth import): /actualyze lists the catalog on actualyze with the imported key, and k opens the key prompt",
+    actualyze: "mock",
+    importKey: "ok",
+    steps: [
+      { command: "/actualyze" },
+      { wait: "ACTUALYZE" },
+      { wait: "Catalog accessible", timeout: 45_000 },
+      { wait: "Claude Haiku" },
+      FULL_LIST,
+      {
+        expect: 'key "Harness import"',
+        label: "the status line names the key",
+      },
+      { screenshot: "persistent" },
+      { press: "k" },
+      { wait: "Actualyze API key", label: "k opens the key prompt" },
+      { press: "esc" },
+      { waitGone: "Actualyze API key" },
+      { expect: READY },
+    ],
+    catalog: (payload, ctx) => {
+      ctx.check(
+        `catalog has no ${RUN_PROVIDER} record`,
+        !payload.providers.some((provider) => provider.id === RUN_PROVIDER),
+      );
+    },
+  },
+  launcherRun({
+    run: "desktop",
+    description:
+      "an Actualyze Desktop run (V2 document, policies allow only actualyze-start): /actualyze lists the run's models on actualyze-start with its environment key, k stays off, and OpenCode's /models lists the same models",
+    key: "ACTUALYZE_API_KEY",
+    credentialSource: "connection",
+  }),
+  launcherRun({
+    run: "atlas",
+    description:
+      "an Atlas aai start run (V1 document, enabled_providers only actualyze-start): /actualyze lists the run's models on actualyze-start with its settings key, k stays off, and OpenCode's /models lists the same models",
+    key: "settings.apiKey",
+    credentialSource: "settings",
+  }),
 ];
+
+/**
+ * A launcher's run: OpenCode keeps to the reserved provider, so `/actualyze`
+ * must list that provider, read its key from the run, and never offer k.
+ */
+function launcherRun({ run, description, key, credentialSource }) {
+  return {
+    name: `actualyze-run-${run}`,
+    description,
+    run,
+    steps: [
+      { command: "/actualyze" },
+      { wait: "ACTUALYZE" },
+      { wait: "Catalog accessible", timeout: 45_000 },
+      { wait: "Claude Haiku" },
+      FULL_LIST,
+      { expect: `key ${key}`, label: "the status line names the run's key" },
+      {
+        expect: RUN_MODEL,
+        label: "the run's declared model is listed",
+      },
+      { expectNot: "Waiting for discovery" },
+      { expectNot: "Connect an Actualyze API key" },
+      { screenshot: "run" },
+      { press: "k" },
+      { sleep: 500 },
+      { expectNot: "Actualyze API key", label: "k opens no key prompt" },
+      { expect: "Catalog accessible" },
+      { press: "esc" },
+      { waitGone: "ACTUALYZE" },
+      { command: "/models" },
+      { wait: "Select model" },
+      {
+        wait: "Claude Haiku",
+        label: "OpenCode's own picker lists the run's models",
+      },
+      { screenshot: "models" },
+      { press: "esc" },
+      { waitGone: "Select model" },
+    ],
+    catalog: (payload, ctx) => {
+      const record = payload.providers.find(
+        (provider) => provider.id === RUN_PROVIDER,
+      );
+      ctx.check(
+        `${RUN_PROVIDER} is discovered with the run's key`,
+        record !== undefined &&
+          record.credentialSource === credentialSource &&
+          record.resultEpoch === record.credentialEpoch &&
+          record.models.length > 0,
+        `(${record?.credentialSource}, ${record?.models.length} models)`,
+      );
+      ctx.check(
+        "catalog has no actualyze record",
+        !payload.providers.some((provider) => provider.id === "actualyze"),
+      );
+    },
+  };
+}
 
 // ── Arguments ───────────────────────────────────────────────────────────
 
@@ -1123,6 +1233,7 @@ async function runScenario(scenario, sizeName, theme, screenshotsDir) {
     log: (line) => quiet.push(line),
     mockProbe: scenario.mockProbe,
     actualyzeProbe: scenario.actualyzeProbe,
+    run: scenario.run,
   });
   if (!check(`${runName}: harness starts`, started, `(${quiet.at(-1)})`))
     return;
@@ -1143,6 +1254,28 @@ async function runScenario(scenario, sizeName, theme, screenshotsDir) {
     untyped: new Set(),
     check: (label, ok, detail) => check(`${runName}: ${label}`, ok, detail),
   };
+  if (scenario.run) {
+    // The run's key reaches the TUI only through its environment.
+    const key = mockKey("ok");
+    ctx.keys.add(key);
+    ctx.submitted.add(key);
+    ctx.untyped.add(key);
+  }
+  if (scenario.importKey) {
+    const key = mockKey(scenario.importKey);
+    ctx.keys.add(key);
+    const code = await importMockKey(key);
+    if (
+      !check(
+        `${runName}: import mock key "${scenario.importKey}"`,
+        code === 0,
+        `(exit ${code})`,
+      )
+    )
+      return;
+    ctx.submitted.add(key);
+    ctx.untyped.add(key);
+  }
   if (scenario.connect) {
     const key = mockKey(scenario.connect);
     ctx.keys.add(key);
@@ -1162,7 +1295,11 @@ async function runScenario(scenario, sizeName, theme, screenshotsDir) {
   const session = await launchTerminal({
     command: "/usr/bin/env",
     args: envArgv(
-      isolatedEnv({ TERM: "xterm-256color", COLORTERM: "truecolor" }),
+      isolatedEnv({
+        TERM: "xterm-256color",
+        COLORTERM: "truecolor",
+        ...(scenario.run ? runEnv(scenario.run) : {}),
+      }),
       ["--standalone", PROJECT],
     ),
     cols: size.cols,

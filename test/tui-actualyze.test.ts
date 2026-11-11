@@ -10,6 +10,8 @@ import {
 import {
   actualyzeEndpoint,
   actualyzeLinks,
+  actualyzeProviderID,
+  awaitingCheck,
   BUILT_IN_ENDPOINT,
   canEnterKey,
   createSessionTracker,
@@ -86,6 +88,7 @@ function marker(
   return {
     session: 1,
     phase,
+    providerIDAtSubmit: "actualyze",
     epochAtSubmit: 1,
     instanceIDAtSubmit: "i1",
     ...overrides,
@@ -94,6 +97,7 @@ function marker(
 
 function rowOf(inputs: Partial<ActualyzeInputs>): ActualyzeRow {
   return deriveActualyzeState({
+    providerID: "actualyze",
     pending: undefined,
     server: "ready",
     payload: payload(record()),
@@ -101,6 +105,52 @@ function rowOf(inputs: Partial<ActualyzeInputs>): ActualyzeRow {
     ...inputs,
   }).row;
 }
+
+describe("the provider the dialog shows", () => {
+  /** A run's provider, as Actualyze Desktop and Atlas define it. */
+  const run = (id = "actualyze-start") => ({
+    id,
+    settings: {
+      baseURL: "https://app.actualyze.ai/openai/v1",
+      probe: "actualyze",
+    },
+  });
+
+  it("is actualyze whenever OpenCode lists it, even beside a run's provider", () => {
+    expect(actualyzeProviderID([{ id: "actualyze" }])).toBe("actualyze");
+    expect(actualyzeProviderID([run(), { id: "actualyze" }])).toBe("actualyze");
+    expect(actualyzeProviderID([{ id: "actualyze" }, run()])).toBe("actualyze");
+  });
+
+  it("is the only provider probed for actualyze when actualyze is not listed", () => {
+    expect(actualyzeProviderID([run()])).toBe("actualyze-start");
+    expect(
+      actualyzeProviderID([
+        { id: "openai" },
+        { id: "local", settings: { probe: "vllm" } },
+        { id: "odd", settings: null },
+        run(),
+      ]),
+    ).toBe("actualyze-start");
+  });
+
+  it("falls back to actualyze when no single listed provider is probed for actualyze", () => {
+    const cases: Array<Parameters<typeof actualyzeProviderID>[0]> = [
+      undefined,
+      [],
+      [{ id: "openai" }],
+      [{ id: "local", settings: { probe: "vllm" } }],
+      [run("actualyze-start"), run("actualyze-atlas")],
+      [{ id: "odd", settings: null }],
+      [{ id: "odd", settings: "actualyze" }],
+      [{ id: "odd", settings: { probe: ["actualyze"] } }],
+    ];
+    for (const providers of cases)
+      expect(actualyzeProviderID(providers), JSON.stringify(providers)).toBe(
+        "actualyze",
+      );
+  });
+});
 
 describe("endpoint", () => {
   it("uses the built-in origin without a badge when no base URL is set", () => {
@@ -290,32 +340,124 @@ describe("integration facts", () => {
 });
 
 describe("pending marker", () => {
-  it("records the epoch and instance at submit, or -1 without a record", () => {
-    expect(submitEvent(3, payload(record({ credentialEpoch: 4 })))).toEqual({
+  it("records the provider, epoch, and instance at submit, or -1 without a record", () => {
+    expect(
+      submitEvent(3, payload(record({ credentialEpoch: 4 })), "actualyze"),
+    ).toEqual({
       type: "submit",
       session: 3,
+      providerIDAtSubmit: "actualyze",
       epochAtSubmit: 4,
       instanceIDAtSubmit: "i1",
     });
-    expect(submitEvent(3, payload(undefined)).epochAtSubmit).toBe(-1);
-    expect(submitEvent(3, undefined)).toEqual({
+    expect(submitEvent(3, payload(undefined), "actualyze").epochAtSubmit).toBe(
+      -1,
+    );
+    expect(submitEvent(3, undefined, "actualyze")).toEqual({
       type: "submit",
       session: 3,
+      providerIDAtSubmit: "actualyze",
       epochAtSubmit: -1,
       instanceIDAtSubmit: undefined,
     });
+  });
+
+  it("takes the epoch at submit from the shown provider's record only", () => {
+    const both = payload(undefined, {
+      providers: [
+        record({ credentialEpoch: 4 }),
+        record({ id: "actualyze-start", credentialEpoch: 7 }),
+      ],
+    });
+    expect(submitEvent(3, both, "actualyze-start")).toMatchObject({
+      providerIDAtSubmit: "actualyze-start",
+      epochAtSubmit: 7,
+    });
+    expect(submitEvent(3, both, "actualyze")).toMatchObject({
+      providerIDAtSubmit: "actualyze",
+      epochAtSubmit: 4,
+    });
+    expect(submitEvent(3, payload(record()), "actualyze-start")).toEqual({
+      type: "submit",
+      session: 3,
+      providerIDAtSubmit: "actualyze-start",
+      epochAtSubmit: -1,
+      instanceIDAtSubmit: "i1",
+    });
+  });
+
+  it("takes the epoch at submit as the baseline only for the same server instance and provider", () => {
+    const pending = marker("saved", {
+      providerIDAtSubmit: "actualyze-start",
+      epochAtSubmit: 5,
+    });
+    const run = (credentialEpoch: number, instanceID = "i1") =>
+      payload(
+        record({
+          id: "actualyze-start",
+          credentialEpoch,
+          resultEpoch: credentialEpoch,
+        }),
+        { instanceID },
+      );
+    expect(awaitingCheck(pending, run(5), "actualyze-start")).toBe(true);
+    expect(awaitingCheck(pending, run(6), "actualyze-start")).toBe(false);
+    // Epochs restart with the server instance and differ between providers.
+    expect(awaitingCheck(pending, run(0, "i2"), "actualyze-start")).toBe(false);
+    const shownOnActualyze = payload(
+      record({ credentialEpoch: 0, resultEpoch: 0 }),
+    );
+    expect(awaitingCheck(pending, shownOnActualyze, "actualyze")).toBe(false);
+  });
+
+  it("leaves checking when a key submitted on an alias provider settles on actualyze", () => {
+    // The alias is probed for actualyze and uses the actualyze integration,
+    // so k was allowed while the dialog showed it.
+    const onAlias = payload(
+      record({ id: "team-actualyze", credentialEpoch: 3, resultEpoch: 3 }),
+    );
+    let pending = reducePending(
+      undefined,
+      submitEvent(1, onAlias, "team-actualyze"),
+    );
+    pending = reducePending(pending, { type: "resolved", session: 1, at: 0 });
+    expect(
+      rowOf({ providerID: "team-actualyze", pending, payload: onAlias }),
+    ).toBe("checking");
+    // The connected key lists actualyze, whose record has epochs of its own.
+    const onActualyze = payload(record({ credentialEpoch: 0, resultEpoch: 0 }));
+    expect(
+      rowOf({ providerID: "actualyze", pending, payload: onActualyze }),
+    ).toBe("ready");
+  });
+
+  it("checks a saved key against the shown provider's record only", () => {
+    const pending = marker("saved", { epochAtSubmit: 1 });
+    const settled = record({
+      id: "actualyze-start",
+      credentialEpoch: 2,
+      resultEpoch: 2,
+    });
+    const before = record({ credentialEpoch: 1, resultEpoch: 1 });
+    const both = payload(undefined, { providers: [before, settled] });
+    expect(awaitingCheck(pending, both, "actualyze-start")).toBe(false);
+    expect(awaitingCheck(pending, both, "actualyze")).toBe(true);
+    // Another provider's settled record is no record for the shown one.
+    expect(awaitingCheck(pending, payload(settled), "actualyze")).toBe(true);
   });
 
   it("starts saving on submit and replaces an earlier marker", () => {
     const next = reducePending(marker("unconfirmed"), {
       type: "submit",
       session: 2,
+      providerIDAtSubmit: "actualyze-start",
       epochAtSubmit: 5,
       instanceIDAtSubmit: "i2",
     });
     expect(next).toEqual({
       session: 2,
       phase: "saving",
+      providerIDAtSubmit: "actualyze-start",
       epochAtSubmit: 5,
       instanceIDAtSubmit: "i2",
     });
@@ -363,7 +505,7 @@ describe("pending marker", () => {
   it("walks submit, the prompt round trip, the save, and the check to ready", () => {
     const before = payload(record({ credentialEpoch: 1, resultEpoch: 1 }));
     // Submit happens after the prompt returns; the round trip itself sends no event.
-    let pending = reducePending(undefined, submitEvent(1, before));
+    let pending = reducePending(undefined, submitEvent(1, before, "actualyze"));
     expect(rowOf({ pending, payload: before })).toBe("saving");
 
     pending = reducePending(pending, { type: "resolved", session: 1, at: 0 });
@@ -428,6 +570,27 @@ describe("state", () => {
       }),
     ).toBe("held");
     expect(rowOf({ payload: payload(record({ held: false })) })).toBe("ready");
+  });
+
+  it("reads the shown provider's record from a payload that has several", () => {
+    const both = payload(undefined, {
+      providers: [
+        record({ held: true }),
+        record({ id: "actualyze-start", credentialSource: "settings" }),
+      ],
+    });
+    const state = (providerID: string) =>
+      deriveActualyzeState({
+        providerID,
+        pending: undefined,
+        server: "ready",
+        payload: both,
+        connected: true,
+      });
+    expect(state("actualyze-start").row).toBe("ready");
+    expect(state("actualyze-start").record?.credentialSource).toBe("settings");
+    expect(state("actualyze").row).toBe("held");
+    expect(state("actualyze").record?.held).toBe(true);
   });
 
   it("waits for the catalog before saying no key is connected", () => {
@@ -517,9 +680,17 @@ describe("state table", () => {
                   };
   }
 
-  function build(shape: RecordShape): CatalogProviderRecord | undefined {
+  /** The built-in provider and a run's provider. */
+  const PROVIDER_IDS = ["actualyze", "actualyze-start"] as const;
+  type ProviderID = (typeof PROVIDER_IDS)[number];
+
+  function build(
+    shape: RecordShape,
+    id: ProviderID,
+  ): CatalogProviderRecord | undefined {
     if (!shape) return undefined;
     return record({
+      id,
       credentialSource: shape.credentialSource,
       credentialEpoch: shape.credentialEpoch,
       resultEpoch: shape.current ? shape.credentialEpoch : null,
@@ -532,28 +703,84 @@ describe("state table", () => {
     });
   }
 
+  interface Combination {
+    /** The provider the dialog shows. */
+    readonly providerID: ProviderID;
+    /** The provider the payload's one record belongs to. */
+    readonly recordID: ProviderID;
+    /** The provider the dialog showed when the key was submitted. */
+    readonly submittedOn: ProviderID;
+    readonly pending: Pending;
+    readonly server: ActualyzeInputs["server"];
+    readonly builtIn: "managed" | "foreign";
+    readonly status: CatalogPayload["status"];
+    readonly instanceID: string;
+    readonly connected: boolean | undefined;
+    readonly shape: RecordShape;
+  }
+
+  function* combinations(): Generator<Combination> {
+    const pendings: Pending[] = ["none", "saving", "saved", "unconfirmed"];
+    const servers: ActualyzeInputs["server"][] = [
+      "loading",
+      "unavailable",
+      "ready",
+    ];
+    for (const providerID of PROVIDER_IDS)
+      for (const recordID of PROVIDER_IDS)
+        for (const submittedOn of PROVIDER_IDS)
+          for (const shape of shapes())
+            for (const pending of pendings)
+              for (const server of servers)
+                for (const builtIn of ["managed", "foreign"] as const)
+                  for (const status of ["pending", "complete"] as const)
+                    for (const instanceID of ["i1", "i2"])
+                      for (const connected of [undefined, false, true])
+                        yield {
+                          providerID,
+                          recordID,
+                          submittedOn,
+                          pending,
+                          server,
+                          builtIn,
+                          status,
+                          instanceID,
+                          connected,
+                          shape,
+                        };
+  }
+
   /**
    * The table's conditions, each on its own; the expected row is the first
    * that holds, and `resolving` when none does.
    */
-  function expected(
-    pending: Pending,
-    server: ActualyzeInputs["server"],
-    builtIn: "managed" | "foreign",
-    status: CatalogPayload["status"],
-    instanceID: string,
-    connected: boolean | undefined,
-    shape: RecordShape,
-  ): ActualyzeRow {
+  function expected({
+    providerID,
+    recordID,
+    submittedOn,
+    pending,
+    server,
+    builtIn,
+    status,
+    instanceID,
+    connected,
+    shape,
+  }: Combination): ActualyzeRow {
     const ready = server === "ready";
-    const rec = ready ? shape : undefined;
+    // A record of another provider than the shown one counts as no record.
+    const rec = ready && recordID === providerID ? shape : undefined;
     const current = rec?.current === true;
-    const baseline = instanceID === "i1" ? 1 : -1;
+    // The marker's epoch at submit is 1, and the payload at submit was i1's.
+    const baseline = instanceID === "i1" && submittedOn === providerID ? 1 : -1;
     const rows: Array<[ActualyzeRow, boolean]> = [
       ["saving", pending === "saving"],
       ["unconfirmed", pending === "unconfirmed"],
       ["server-unavailable", server === "unavailable"],
-      ["not-managed", ready && builtIn === "foreign"],
+      // Another definition of actualyze concerns only that provider.
+      [
+        "not-managed",
+        ready && builtIn === "foreign" && providerID === "actualyze",
+      ],
       [
         "checking",
         pending === "saved" &&
@@ -582,65 +809,67 @@ describe("state table", () => {
   }
 
   it("maps every input combination to exactly the first row whose condition holds", () => {
-    const reached = new Set<ActualyzeRow>();
-    let combinations = 0;
-    const pendings: Pending[] = ["none", "saving", "saved", "unconfirmed"];
-    const servers: ActualyzeInputs["server"][] = [
-      "loading",
-      "unavailable",
+    const reached = new Map<ProviderID, Set<ActualyzeRow>>(
+      PROVIDER_IDS.map((id) => [id, new Set<ActualyzeRow>()]),
+    );
+    /** Saved keys that left checking only because they were submitted on another provider. */
+    let leftByProvider = 0;
+    let count = 0;
+    for (const combination of combinations()) {
+      count += 1;
+      const { providerID, recordID, submittedOn, pending, shape } = combination;
+      const actual = deriveActualyzeState({
+        providerID,
+        pending:
+          pending === "none"
+            ? undefined
+            : marker(pending, { providerIDAtSubmit: submittedOn }),
+        server: combination.server,
+        payload:
+          combination.server === "ready"
+            ? payload(build(shape, recordID), {
+                builtIn: { actualyze: combination.builtIn },
+                status: combination.status,
+                instanceID: combination.instanceID,
+              })
+            : undefined,
+        connected: combination.connected,
+      }).row;
+      const want = expected(combination);
+      if (actual !== want)
+        throw new Error(
+          `${JSON.stringify(combination)}: ${actual}, expected ${want}`,
+        );
+      reached.get(providerID)?.add(actual);
+      if (
+        pending === "saved" &&
+        submittedOn !== providerID &&
+        actual !== "checking" &&
+        expected({ ...combination, submittedOn: providerID }) === "checking"
+      )
+        leftByProvider += 1;
+    }
+    expect(count).toBeGreaterThan(10_000);
+    expect(leftByProvider).toBeGreaterThan(0);
+    const rows: ActualyzeRow[] = [
+      "saving",
+      "unconfirmed",
+      "server-unavailable",
+      "not-managed",
+      "checking",
+      "no-key",
+      "resolving",
+      "discovering",
+      "failure",
+      "empty",
       "ready",
     ];
-    for (const shape of shapes())
-      for (const pending of pendings)
-        for (const server of servers)
-          for (const builtIn of ["managed", "foreign"] as const)
-            for (const status of ["pending", "complete"] as const)
-              for (const instanceID of ["i1", "i2"])
-                for (const connected of [undefined, false, true]) {
-                  combinations += 1;
-                  const actual = deriveActualyzeState({
-                    pending: pending === "none" ? undefined : marker(pending),
-                    server,
-                    payload:
-                      server === "ready"
-                        ? payload(build(shape), {
-                            builtIn: { actualyze: builtIn },
-                            status,
-                            instanceID,
-                          })
-                        : undefined,
-                    connected,
-                  }).row;
-                  const want = expected(
-                    pending,
-                    server,
-                    builtIn,
-                    status,
-                    instanceID,
-                    connected,
-                    shape,
-                  );
-                  if (actual !== want)
-                    throw new Error(
-                      `${JSON.stringify({ pending, server, builtIn, status, instanceID, connected, shape })}: ${actual}, expected ${want}`,
-                    );
-                  reached.add(actual);
-                }
-    expect(combinations).toBeGreaterThan(10_000);
-    expect([...reached].sort()).toEqual(
-      [
-        "saving",
-        "unconfirmed",
-        "server-unavailable",
-        "not-managed",
-        "checking",
-        "no-key",
-        "resolving",
-        "discovering",
-        "failure",
-        "empty",
-        "ready",
-      ].sort(),
+    expect([...(reached.get("actualyze") ?? [])].sort()).toEqual(
+      [...rows].sort(),
+    );
+    // A run's provider reaches every row but the one for another definition of actualyze.
+    expect([...(reached.get("actualyze-start") ?? [])].sort()).toEqual(
+      rows.filter((row) => row !== "not-managed").sort(),
     );
   });
 });
