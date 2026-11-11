@@ -9,8 +9,46 @@ import {
   ACTUALYZE_BASE_URL,
   ACTUALYZE_INTEGRATION_ID,
   ACTUALYZE_LINK_PATHS,
+  ACTUALYZE_PROBE_ID,
   ACTUALYZE_PROVIDER_ID,
 } from "./constants";
+
+// ── Provider ────────────────────────────────────────────────────────────
+
+/** The fields of a listed provider that choosing the dialog's provider reads. */
+export interface ListedProvider {
+  readonly id: string;
+  readonly settings?: unknown;
+}
+
+function probeOf(provider: ListedProvider): unknown {
+  const settings = provider.settings;
+  return typeof settings === "object" && settings !== null
+    ? (settings as Record<string, unknown>).probe
+    : undefined;
+}
+
+/**
+ * The provider `/actualyze` shows: `actualyze` when OpenCode lists it, else
+ * the only listed provider whose `settings.probe` is `actualyze`, else
+ * `actualyze`. A run that Actualyze Desktop or Atlas starts puts its models
+ * on a provider of its own and keeps OpenCode off every other one, so
+ * `actualyze` is not listed there. `actualyze` is also not listed while it
+ * has no key, and with no other such provider the dialog still shows it.
+ */
+export function actualyzeProviderID(
+  providers: readonly ListedProvider[] | undefined,
+): string {
+  const listed = providers ?? [];
+  if (listed.some((provider) => provider.id === ACTUALYZE_PROVIDER_ID))
+    return ACTUALYZE_PROVIDER_ID;
+  const probed = listed.filter(
+    (provider) => probeOf(provider) === ACTUALYZE_PROBE_ID,
+  );
+  return probed.length === 1 && probed[0]
+    ? probed[0].id
+    : ACTUALYZE_PROVIDER_ID;
+}
 
 // ── Endpoint ────────────────────────────────────────────────────────────
 
@@ -242,6 +280,8 @@ export type PendingPhase = "saving" | "saved" | "unconfirmed";
 export interface PendingMarker {
   readonly session: number;
   readonly phase: PendingPhase;
+  /** The provider the dialog showed at submit, whose record the epoch is from. */
+  readonly providerIDAtSubmit: string;
   /** The record's `credentialEpoch` at submit, or -1 without a record. */
   readonly epochAtSubmit: number;
   /** The catalog payload's `instanceID` at submit, if one was read. */
@@ -254,6 +294,7 @@ export type PendingEvent =
   | {
       readonly type: "submit";
       readonly session: number;
+      readonly providerIDAtSubmit: string;
       readonly epochAtSubmit: number;
       readonly instanceIDAtSubmit: string | undefined;
     }
@@ -278,6 +319,7 @@ export function reducePending(
       return {
         session: event.session,
         phase: "saving",
+        providerIDAtSubmit: event.providerIDAtSubmit,
         epochAtSubmit: event.epochAtSubmit,
         instanceIDAtSubmit: event.instanceIDAtSubmit,
       };
@@ -296,17 +338,25 @@ export function reducePending(
   }
 }
 
-/** The submit event for the catalog the dialog last read. */
+/** The record of `providerID` in `payload`, if it has one. */
+function recordOf(
+  payload: CatalogPayload | undefined,
+  providerID: string,
+): CatalogProviderRecord | undefined {
+  return payload?.providers.find((item) => item.id === providerID);
+}
+
+/** The submit event for the catalog the dialog last read and the provider it shows. */
 export function submitEvent(
   session: number,
   payload: CatalogPayload | undefined,
+  providerID: string,
 ): Extract<PendingEvent, { type: "submit" }> {
-  const record = payload?.providers.find(
-    (item) => item.id === ACTUALYZE_PROVIDER_ID,
-  );
+  const record = recordOf(payload, providerID);
   return {
     type: "submit",
     session,
+    providerIDAtSubmit: providerID,
     epochAtSubmit: record?.credentialEpoch ?? -1,
     instanceIDAtSubmit: payload?.instanceID,
   };
@@ -322,19 +372,20 @@ export function isCurrent(record: CatalogProviderRecord): boolean {
 /**
  * Whether a saved key still waits for the catalog: no current record yet,
  * or one whose credential epoch is not past the submit. After a server
- * reload or restart (another `instanceID`) epochs restart, so any current
+ * reload or restart (another `instanceID`) epochs restart, and another
+ * provider's record has epochs of its own, so in both cases any current
  * record counts as new.
  */
 export function awaitingCheck(
   marker: PendingMarker,
   payload: CatalogPayload | undefined,
+  providerID: string,
 ): boolean {
-  const record = payload?.providers.find(
-    (item) => item.id === ACTUALYZE_PROVIDER_ID,
-  );
+  const record = recordOf(payload, providerID);
   if (!record || !isCurrent(record)) return true;
   const baseline =
-    payload?.instanceID === marker.instanceIDAtSubmit
+    payload?.instanceID === marker.instanceIDAtSubmit &&
+    providerID === marker.providerIDAtSubmit
       ? marker.epochAtSubmit
       : -1;
   return record.credentialEpoch <= baseline;
@@ -356,6 +407,8 @@ export type ActualyzeRow =
 
 /** Every input the state table reads. */
 export interface ActualyzeInputs {
+  /** The provider the dialog shows; see `actualyzeProviderID`. */
+  readonly providerID: string;
   readonly pending: PendingMarker | undefined;
   /** The catalog RPC: not read yet, failed or invalid, or answered. */
   readonly server: "loading" | "unavailable" | "ready";
@@ -367,7 +420,7 @@ export interface ActualyzeInputs {
 
 export interface ActualyzeState {
   readonly row: ActualyzeRow;
-  /** The `actualyze` record, when the payload has one. */
+  /** The record of the provider the dialog shows, when the payload has one. */
   readonly record: CatalogProviderRecord | undefined;
 }
 
@@ -375,21 +428,27 @@ export interface ActualyzeState {
  * The `/actualyze` state, highest priority first. Rows that show a
  * discovery result need a current record; every combination no other row
  * claims is `resolving`. A `held` record gets no discovery until OpenCode
- * restarts, so it outranks every row that waits for one.
+ * restarts, so it outranks every row that waits for one. Another
+ * definition of `actualyze` concerns only that provider.
  */
 export function deriveActualyzeState(inputs: ActualyzeInputs): ActualyzeState {
   const payload = inputs.server === "ready" ? inputs.payload : undefined;
-  const record = payload?.providers.find(
-    (item) => item.id === ACTUALYZE_PROVIDER_ID,
-  );
+  const record = recordOf(payload, inputs.providerID);
   const at = (row: ActualyzeRow): ActualyzeState => ({ row, record });
   const pending = inputs.pending;
   if (pending?.phase === "saving") return at("saving");
   if (pending?.phase === "unconfirmed") return at("unconfirmed");
   if (inputs.server === "unavailable") return at("server-unavailable");
-  if (payload?.builtIn.actualyze === "foreign") return at("not-managed");
+  if (
+    inputs.providerID === ACTUALYZE_PROVIDER_ID &&
+    payload?.builtIn.actualyze === "foreign"
+  )
+    return at("not-managed");
   if (record?.held === true) return at("held");
-  if (pending?.phase === "saved" && awaitingCheck(pending, payload))
+  if (
+    pending?.phase === "saved" &&
+    awaitingCheck(pending, payload, inputs.providerID)
+  )
     return at("checking");
   // While the catalog loads, a missing record says nothing yet: a
   // `settings.apiKey` user has no connection either.

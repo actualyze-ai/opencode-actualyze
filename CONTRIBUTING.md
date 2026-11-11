@@ -213,6 +213,15 @@ runs the scenario's steps. Then it waits for the harness server's catalog
 to settle and checks it against the v6 validator and the scenario's own
 catalog checks.
 
+A scenario with `importKey` stores its synthetic key with
+`opencode auth import --standalone` instead, the way Actualyze Desktop's
+Persistent setup does. A scenario with `run: "desktop"` or `run: "atlas"`
+starts both the harness server and the TUI as that launcher's run against
+the Actualyze mock. The run's `OPENCODE_CONFIG_CONTENT` follows the
+launcher's document (Desktop's V2 document with `provider.use` policies, or
+Atlas's V1 document with `enabled_providers`) with the plugin loaded from
+`dist`. The run's key is the mock's `ok` key in `ACTUALYZE_API_KEY`.
+
 The runner refuses to start while `ACTUALYZE_API_KEY_FILE` or
 `ACTUALYZE_BASE_URL` is set, so only synthetic `aai_pat_mock_*` keys are ever
 in play. It checks that a key never leaks:
@@ -541,8 +550,9 @@ with a notice.
   lines of role-tagged segments. **`src/tui-list.ts`** paints rows as one
   StyledText node each and fits text by terminal column.
   **`src/tui-theme.ts`** maps the roles to dialog-surface colors.
-- **`src/tui-actualyze.ts`** holds the pure `/actualyze` logic: the state
-  table, the pending-key reducer, the endpoint origin, and the app links.
+- **`src/tui-actualyze.ts`** holds the pure `/actualyze` logic: the choice
+  of provider to show, the state table, the pending-key reducer, the
+  endpoint origin and the app links.
   **`src/tui-actualyze-view.ts`** runs `/actualyze` sessions, the key flow,
   the cards, and the links screen.
 

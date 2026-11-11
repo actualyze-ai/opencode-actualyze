@@ -13,6 +13,7 @@ import {
   actualyzeEndpoint,
   actualyzeLink,
   actualyzeLinks,
+  actualyzeProviderID,
   awaitingCheck,
   canEnterKey,
   createSessionTracker,
@@ -82,15 +83,17 @@ import type { ForegroundRole } from "./tui-theme";
 type Context = Plugin.Context;
 type LocationRef = ReturnType<Context["data"]["location"]["default"]>;
 
-const ACTUALYZE_SCOPE: BrowserScope = {
-  kind: "provider",
-  providerID: ACTUALYZE_PROVIDER_ID,
-};
-
 /** How long OpenCode gets to confirm a submitted key. */
 const SAVE_TIMEOUT_MS = 15_000;
 /** How long reading the integration and provider stores may take. */
 const FACTS_TIMEOUT_MS = 10_000;
+/**
+ * How long opening waits for the first read of the stores, which names the
+ * provider to show. OpenCode answers within milliseconds once its plugins
+ * are active, and holds the read for up to 5 s while they activate; a read
+ * that ends later shows the dialog again on the provider it names.
+ */
+const OPEN_WAIT_MS = 1_000;
 /** After this long in "checking", the status says it is still checking. */
 const STILL_CHECKING_MS = 20_000;
 
@@ -100,13 +103,15 @@ const KEY_VISIBLE =
 // ── Session state ───────────────────────────────────────────────────────
 
 interface ProviderFacts {
-  /** The provider's integration: its `integrationID`, else its ID. */
-  readonly integrationID: string;
   readonly endpoint: ActualyzeEndpoint;
 }
 
 /** What the dialog reads from OpenCode's integration and provider stores. */
 interface Facts {
+  /** The provider to show; see `actualyzeProviderID`. */
+  readonly providerID: string;
+  /** Its integration: its `integrationID`, else its ID. */
+  readonly integrationID: string;
   /** Undefined while OpenCode hides the provider for lack of a key. */
   readonly provider: ProviderFacts | undefined;
   readonly integration: IntegrationFacts;
@@ -117,6 +122,8 @@ interface Session {
   readonly context: Context;
   readonly location: LocationRef;
   readonly openModelScout: () => void;
+  /** The provider the dialog on screen, or the next one shown, lists. */
+  providerID: string;
   /** Undefined until the stores are read once. */
   facts: Facts | undefined;
   factsReading: boolean;
@@ -131,6 +138,8 @@ interface Session {
   cardReloads: boolean;
   /** The key prompt is open; the dialog it closed keeps the session. */
   prompting: boolean;
+  /** The dialog is closing to show again on another provider; the session continues. */
+  rescoping: boolean;
   ended: boolean;
   handle: BrowserHandle | undefined;
   tools: BrowserFrameTools | undefined;
@@ -259,6 +268,7 @@ export async function openActualyze(
     context,
     location,
     openModelScout: options.openModelScout,
+    providerID: ACTUALYZE_PROVIDER_ID,
     facts: undefined,
     factsReading: false,
     factsAgain: false,
@@ -268,6 +278,7 @@ export async function openActualyze(
     cardLink: undefined,
     cardReloads: false,
     prompting: false,
+    rescoping: false,
     ended: false,
     handle: undefined,
     tools: undefined,
@@ -276,15 +287,47 @@ export async function openActualyze(
   };
   live.set(context, session);
   watchFacts(session);
-  void readFactsInto(session, false);
+  await settledWithin(readFactsInto(session, false), OPEN_WAIT_MS);
   await show(session);
 }
 
-/** Show the dialog for `session`, at the start and after the key prompt. */
+/** Wait for `promise` to settle, but at most `ms`. */
+async function settledWithin(
+  promise: Promise<void>,
+  ms: number,
+): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const elapsed = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, ms);
+    (timer as { unref?: () => void }).unref?.();
+  });
+  try {
+    await Promise.race([promise.catch(() => undefined), elapsed]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Show the dialog for `session`, at the start, after the key prompt, and
+ * when the stores name another provider. It lists the provider the last
+ * read of the stores named.
+ */
 async function show(session: Session): Promise<void> {
   if (session.ended) return;
+  // The browser reads the context's current location, so a session whose
+  // location changed would mix its facts with another location's catalog.
+  if (!accepts(session)) {
+    abandon(session);
+    return;
+  }
+  session.providerID = session.facts?.providerID ?? ACTUALYZE_PROVIDER_ID;
+  const scope: BrowserScope = {
+    kind: "provider",
+    providerID: session.providerID,
+  };
   let tools: BrowserFrameTools | undefined;
-  const handle = await openBrowser(session.context, ACTUALYZE_SCOPE, {
+  const handle = await openBrowser(session.context, scope, {
     title: ACTUALYZE_NAME,
     searchPlaceholder: "Search Actualyze models",
     extraActions: extraActions(session),
@@ -298,7 +341,7 @@ async function show(session: Session): Promise<void> {
         session.tools = undefined;
         session.handle = undefined;
       }
-      if (!session.prompting) endSession(session);
+      if (!session.prompting && !session.rescoping) endSession(session);
     },
   });
   if (!handle) {
@@ -309,7 +352,10 @@ async function show(session: Session): Promise<void> {
     handle.close();
     return;
   }
-  if (!handle.closed) session.handle = handle;
+  if (handle.closed) return;
+  session.handle = handle;
+  // A read that ended while the dialog was opening may name another provider.
+  rescope(session);
 }
 
 // ── Integration and provider ────────────────────────────────────────────
@@ -328,9 +374,9 @@ async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 }
 
 /**
- * Read the provider and its integration from OpenCode's stores. Only the
- * provider's `integrationID` and `settings.baseURL` are read; its other
- * settings can hold a plaintext key.
+ * Read the provider to show and its integration from OpenCode's stores.
+ * Of each provider only `id`, `integrationID`, `settings.probe`, and
+ * `settings.baseURL` are read; other settings can hold a plaintext key.
  */
 async function readFacts(context: Context, ref: LocationRef): Promise<Facts> {
   const stores = context.data.location;
@@ -338,17 +384,18 @@ async function readFacts(context: Context, ref: LocationRef): Promise<Facts> {
     Promise.all([stores.integration.sync(ref), stores.provider.sync(ref)]),
     FACTS_TIMEOUT_MS,
   );
-  const provider = stores.provider
-    .list(ref)
-    ?.find((item) => item.id === ACTUALYZE_PROVIDER_ID);
-  const integrationID = provider?.integrationID ?? ACTUALYZE_INTEGRATION_ID;
+  const providers = stores.provider.list(ref);
+  const providerID = actualyzeProviderID(providers);
+  const provider = providers?.find((item) => item.id === providerID);
+  const integrationID = provider?.integrationID ?? providerID;
   const integration = stores.integration
     .list(ref)
     ?.find((item) => item.id === integrationID);
   return {
+    providerID,
+    integrationID,
     provider: provider
       ? {
-          integrationID,
           endpoint: actualyzeEndpoint(
             (provider.settings as Record<string, unknown> | undefined)?.baseURL,
           ),
@@ -356,6 +403,32 @@ async function readFacts(context: Context, ref: LocationRef): Promise<Facts> {
       : undefined,
     integration: integrationFacts(integration),
   };
+}
+
+/**
+ * Show the dialog again when the stores name another provider than the
+ * one it lists, as when the first read ended after the dialog opened.
+ * Returns whether it closed the dialog for that.
+ */
+function rescope(session: Session): boolean {
+  const handle = session.handle;
+  if (
+    session.ended ||
+    session.prompting ||
+    !handle ||
+    handle.closed ||
+    session.facts === undefined ||
+    session.facts.providerID === session.providerID
+  )
+    return false;
+  session.rescoping = true;
+  try {
+    handle.close();
+  } finally {
+    session.rescoping = false;
+  }
+  void show(session);
+  return true;
 }
 
 /** Read the stores again, at most one read at a time; a failed read keeps the last facts. */
@@ -383,7 +456,7 @@ async function readFactsInto(
         const facts = await readFacts(session.context, session.location);
         if (session.ended) return;
         session.facts = facts;
-        session.tools?.repaint();
+        if (!rescope(session)) session.tools?.repaint();
       } catch {
         // The next event reads again.
       }
@@ -419,6 +492,8 @@ function watchFacts(session: Session): void {
 // ── Derived view ────────────────────────────────────────────────────────
 
 interface ViewState {
+  /** The provider the dialog lists. */
+  readonly providerID: string;
   readonly state: ActualyzeState;
   readonly data: BrowserData;
   readonly pending: PendingMarker | undefined;
@@ -427,6 +502,11 @@ interface ViewState {
   /** Undefined until the stores are read. */
   readonly endpoint: ActualyzeEndpoint | undefined;
   readonly keyAllowed: boolean;
+  /**
+   * The provider reads its key from the `actualyze` integration, where `k`
+   * stores keys; a run's own provider reads another one.
+   */
+  readonly actualyzeKeys: boolean;
 }
 
 function keyAllowed(session: Session): boolean {
@@ -434,15 +514,13 @@ function keyAllowed(session: Session): boolean {
   return (
     facts !== undefined &&
     session.pending?.phase !== "saving" &&
-    canEnterKey(
-      facts.provider?.integrationID ?? ACTUALYZE_INTEGRATION_ID,
-      facts.integration,
-    )
+    canEnterKey(facts.integrationID, facts.integration)
   );
 }
 
 function viewState(session: Session, data: BrowserData): ViewState {
   session.data = data;
+  const providerID = session.providerID;
   const server =
     data.status !== "ready"
       ? "loading"
@@ -453,14 +531,16 @@ function viewState(session: Session, data: BrowserData): ViewState {
   if (
     server === "ready" &&
     pending?.phase === "saved" &&
-    !awaitingCheck(pending, data.catalog)
+    !awaitingCheck(pending, data.catalog, providerID)
   )
     session.pending = reducePending(pending, { type: "checked" });
   const facts = session.facts;
   const connection = facts?.integration.connection;
   const connected = facts ? connection !== undefined : undefined;
   return {
+    providerID,
     state: deriveActualyzeState({
+      providerID,
       pending: session.pending,
       server,
       payload: data.catalog,
@@ -474,6 +554,8 @@ function viewState(session: Session, data: BrowserData): ViewState {
       ? (facts.provider?.endpoint ?? defaultEndpoint())
       : undefined,
     keyAllowed: keyAllowed(session),
+    actualyzeKeys:
+      (facts?.integrationID ?? providerID) === ACTUALYZE_INTEGRATION_ID,
   };
 }
 
@@ -493,14 +575,19 @@ interface FailureCopy {
   readonly role: ForegroundRole;
 }
 
-const BASE_URL_SETTING = "providers.actualyze.settings.baseURL";
+/** The setting that holds the base URL of the provider the dialog lists. */
+function baseURLSetting(providerID: string): string {
+  return `providers.${providerID}.settings.baseURL`;
+}
 
 function failureCopy(
   failure: ProviderFailure,
   wait: number | undefined,
+  providerID: string,
 ): FailureCopy {
   const status = failure.httpStatus;
   const retry = retrySentence(wait);
+  const setting = baseURLSetting(providerID);
   switch (failure.kind) {
     case "unauthorized":
       return {
@@ -534,7 +621,7 @@ function failureCopy(
       return {
         headline: "Could not reach the endpoint",
         title: "The connection failed",
-        body: `Check your network, VPN, or proxy, and ${BASE_URL_SETTING}. ${retry}`,
+        body: `Check your network, VPN, or proxy, and ${setting}. ${retry}`,
         role: "warn",
       };
     case "timeout":
@@ -555,7 +642,7 @@ function failureCopy(
       return {
         headline: "No model list at this endpoint (404)",
         title: "The base URL may be wrong",
-        body: `The setting ${BASE_URL_SETTING} should end in /openai/v1.`,
+        body: `The setting ${setting} should end in /openai/v1.`,
         role: "warn",
       };
     case "http-error":
@@ -569,7 +656,7 @@ function failureCopy(
       return {
         headline: "Unexpected answer (not a model list)",
         title: "The endpoint did not send a model list",
-        body: `Check ${BASE_URL_SETTING}. ${retry}`,
+        body: `Check ${setting}. ${retry}`,
         role: "warn",
       };
     case "aborted":
@@ -589,15 +676,23 @@ function failureCopy(
   }
 }
 
-/** Where the key in use comes from, when the card should say so. */
+/**
+ * Where the key in use comes from, when the card should say so. Only a
+ * provider on the `actualyze` integration takes a key from k; another
+ * provider, such as the one a run brings, keeps the key it was started with.
+ */
 function keySourceNote(
   view: ViewState,
   record: CatalogProviderRecord | undefined,
 ): string | undefined {
   if (record?.credentialSource === "settings")
-    return "The key comes from settings.apiKey in opencode.json; a key connected with k takes precedence.";
+    return view.actualyzeKeys
+      ? "The key comes from settings.apiKey in opencode.json; a key connected with k takes precedence."
+      : `The key comes from providers.${view.providerID}.settings.apiKey.`;
   if (view.connection?.kind === "env")
-    return `The key comes from ${view.connection.name} on the background service; a key connected with k takes precedence.`;
+    return view.actualyzeKeys
+      ? `The key comes from ${view.connection.name} on the background service; a key connected with k takes precedence.`
+      : `The key comes from ${view.connection.name} in OpenCode's environment.`;
   return undefined;
 }
 
@@ -667,9 +762,9 @@ function statusLine(
   ];
 }
 
-/** Chat models of the Actualyze group, as `/modelscout` counts them. */
-function chatModelCount(data: BrowserData): number {
-  const group = data.groups.find((item) => item.id === ACTUALYZE_PROVIDER_ID);
+/** Chat models of the listed provider's group, as `/modelscout` counts them. */
+function chatModelCount(view: ViewState): number {
+  const group = view.data.groups.find((item) => item.id === view.providerID);
   return (
     group?.models.filter((model) => model.type !== "embedding").length ?? 0
   );
@@ -716,7 +811,7 @@ function statusSegments(
     case "not-managed":
       return line("○", "muted", "Not managed by Model Scout", keyPart);
     case "held": {
-      const count = chatModelCount(data);
+      const count = chatModelCount(view);
       return line(
         "▲",
         "warn",
@@ -747,13 +842,14 @@ function statusSegments(
       const copy = failureCopy(
         record.failure,
         refreshWaitSeconds(record, data, now),
+        view.providerID,
       );
       return line("▲", copy.role, copy.headline, keyPart, agePart);
     }
     case "empty":
       return line("▲", "warn", "No models for this key", keyPart, agePart);
     case "ready": {
-      const count = chatModelCount(data);
+      const count = chatModelCount(view);
       return line(
         "●",
         "ok",
@@ -1001,6 +1097,28 @@ function noKeyCard(view: ViewState, width: number): BrowserFrameCard {
   return replaceCard(writer, actions);
 }
 
+/**
+ * No key on a provider that does not read the `actualyze` integration, such
+ * as a run's: `k` stores keys there, so the card points to where its key
+ * comes from instead.
+ */
+function providerNoKeyCard(view: ViewState, width: number): BrowserFrameCard {
+  const writer = new CardWriter("muted", width);
+  writer.title(`No key for ${view.providerID}`);
+  writer.text(
+    "A run that Actualyze Desktop or Atlas starts gets its key from them. Start the run again there.",
+  );
+  writer.text(
+    `For a provider in your own settings, set providers.${view.providerID}.settings.apiKey or connect a key under c.`,
+    "muted",
+  );
+  return replaceCard(writer, [
+    LINKS_ACTION,
+    connectionsAction(),
+    BROWSE_ACTION,
+  ]);
+}
+
 function failureCard(
   view: ViewState,
   record: CatalogProviderRecord,
@@ -1010,7 +1128,7 @@ function failureCard(
   linkable: boolean,
 ): BrowserFrameCard {
   const wait = refreshWaitSeconds(record, view.data, now);
-  const copy = failureCopy(failure, wait);
+  const copy = failureCopy(failure, wait, view.providerID);
   const above = hasInventory(record);
   const writer = new CardWriter(copy.role, width);
   writer.title(copy.title);
@@ -1018,7 +1136,7 @@ function failureCard(
   const note = keySourceNote(view, record);
   if (note) writer.text(note, "muted");
   if (above) {
-    const count = chatModelCount(view.data);
+    const count = chatModelCount(view);
     const age = relativeAge(record.lastGoodAt, now);
     writer.text(
       `Showing ${count} ${count === 1 ? "model" : "models"} from the last good check${age ? `, ${age}` : ""}. Links are under l.`,
@@ -1203,7 +1321,7 @@ function describeRow(
       writer.title(HELD_TITLE);
       writer.text(HELD_REASON);
       if (hasInventory(record)) {
-        const count = chatModelCount(data);
+        const count = chatModelCount(view);
         const age = relativeAge(record?.lastGoodAt, now);
         writer.text(
           `Showing ${count} ${count === 1 ? "model" : "models"} from the last good check${age ? `, ${age}` : ""}. They keep working.`,
@@ -1237,7 +1355,9 @@ function describeRow(
       );
     }
     case "no-key":
-      return done(noKeyCard(view, width), "apiKeys");
+      return view.actualyzeKeys
+        ? done(noKeyCard(view, width), "apiKeys")
+        : done(providerNoKeyCard(view, width));
     case "resolving": {
       const writer = new CardWriter("info", width);
       if (data.status === "loading") {
@@ -1337,7 +1457,7 @@ function linksCard(
     lines.push(
       [],
       ...paragraph(
-        "No app links: providers.actualyze.settings.baseURL is not an http(s) URL.",
+        `No app links: ${baseURLSetting(view.providerID)} is not an http(s) URL.`,
         "warn",
       ),
     );
@@ -1407,7 +1527,7 @@ function openLinks(session: Session): void {
     return;
   }
   const record = session.data
-    ? findRecord(session.data, ACTUALYZE_PROVIDER_ID)
+    ? findRecord(session.data, session.providerID)
     : undefined;
   const preferred =
     record?.failure && isCurrent(record)
@@ -1620,7 +1740,7 @@ async function enterKey(session: Session): Promise<void> {
     }
     session.pending = reducePending(
       session.pending,
-      submitEvent(session.id, session.data?.catalog),
+      submitEvent(session.id, session.data?.catalog, session.providerID),
     );
     session.links = false;
     saving = saveKey(context, key, session.location.directory);

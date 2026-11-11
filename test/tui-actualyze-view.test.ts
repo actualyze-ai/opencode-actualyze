@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // The reconciler needs a live renderer; the mock records the
 // createElement/setProp/insert calls the plugin makes, and the core mock
@@ -100,6 +100,16 @@ function line(root: unknown, id: string): string {
 /** Let queued microtasks and pending continuations run. */
 async function settle(): Promise<void> {
   for (let index = 0; index < 5; index += 1) await Promise.resolve();
+}
+
+/**
+ * Settle, then let one real macrotask pass, so a dialog whose modules are
+ * still loading has opened before a test says none did.
+ */
+async function drain(): Promise<void> {
+  await settle();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await settle();
 }
 
 function rootHeight(root: unknown): unknown {
@@ -223,7 +233,10 @@ function record(
 }
 
 function payload(
-  provider: CatalogProviderRecord | undefined,
+  provider:
+    | CatalogProviderRecord
+    | readonly CatalogProviderRecord[]
+    | undefined,
   builtIn: "managed" | "foreign" = "managed",
 ): CatalogPayload {
   return {
@@ -234,7 +247,12 @@ function payload(
     status: "complete",
     completedAt: AT,
     builtIn: { actualyze: builtIn },
-    providers: provider ? [provider] : [],
+    providers:
+      provider === undefined
+        ? []
+        : "id" in provider
+          ? [provider]
+          : [...provider],
   };
 }
 
@@ -244,11 +262,25 @@ interface Entry {
   prompt?: true;
 }
 
+/** The fields of OpenCode's `IntegrationInfo` the harness lists. */
+interface IntegrationRow {
+  readonly id: string;
+  readonly name: string;
+  readonly methods: readonly {
+    readonly type: string;
+    readonly label?: string;
+    readonly names?: readonly string[];
+  }[];
+  readonly connections: readonly Readonly<Record<string, unknown>>[];
+}
+
 interface State {
   connected: boolean;
   catalog: CatalogPayload;
   hostProviders: HostProvider[];
   hostModels: HostModel[];
+  /** OpenCode's integrations; by default the plugin's own, connected as `connected` says. */
+  integrations?: readonly IntegrationRow[];
 }
 
 const NO_KEY: State = {
@@ -315,8 +347,15 @@ function harness(initial: State = NO_KEY) {
   const dispatch = vi.fn();
   /** Unsubscribes of the session's fact events; four per session. */
   const stopFacts = vi.fn();
+  /** Handlers of the fact events, by event type. */
+  const factHandlers = new Map<string, Array<(event: unknown) => void>>();
   const catalog = vi.fn(async (): Promise<unknown> => state.catalog);
-  const integration = () => ({
+  const refresh = vi.fn(
+    async (_input: unknown, _options: unknown): Promise<unknown> => ({
+      accepted: true,
+    }),
+  );
+  const integration = (): IntegrationRow => ({
     id: "actualyze",
     name: "Actualyze",
     methods: [{ type: "key" }, { type: "env", names: ["ACTUALYZE_API_KEY"] }],
@@ -332,14 +371,16 @@ function harness(initial: State = NO_KEY) {
     location: PROJECT as { directory: string },
     data: {
       // The browser's own `model.updated` subscription is not a fact event.
-      on: vi.fn((type: string) =>
-        type === "model.updated" ? () => {} : stopFacts,
-      ),
+      on: vi.fn((type: string, handler: (event: unknown) => void) => {
+        if (type === "model.updated") return () => {};
+        factHandlers.set(type, [...(factHandlers.get(type) ?? []), handler]);
+        return stopFacts;
+      }),
       location: {
         default: () => PROJECT,
         integration: {
           sync: vi.fn(async () => {}),
-          list: vi.fn(() => [integration()]),
+          list: vi.fn(() => state.integrations ?? [integration()]),
           invalidate: vi.fn(),
         },
         provider: {
@@ -352,7 +393,7 @@ function harness(initial: State = NO_KEY) {
     client: {
       rpc: vi.fn(() => ({
         catalog,
-        refresh: vi.fn(async () => ({ accepted: true })),
+        refresh,
         events: {
           on: vi.fn((name: string, handler: (event: unknown) => void) => {
             const set = rpcHandlers.get(name) ?? new Set();
@@ -415,6 +456,7 @@ function harness(initial: State = NO_KEY) {
     dispatch,
     stopFacts,
     catalog,
+    refresh,
     copied: context.renderer.copyToClipboardOSC52,
     openModelScout,
     root: () => root,
@@ -425,6 +467,11 @@ function harness(initial: State = NO_KEY) {
     },
     emitRpc: (name: string) => {
       for (const handler of rpcHandlers.get(name) ?? [])
+        handler({ location: PROJECT });
+    },
+    /** Publish an OpenCode event such as `provider.updated` at the project. */
+    emitFact: (type: string) => {
+      for (const handler of factHandlers.get(type) ?? [])
         handler({ location: PROJECT });
     },
     submitPrompt: (value: string | undefined) => resolvePrompt?.(value),
@@ -1354,5 +1401,628 @@ describe("cards", () => {
     h.setState(NO_KEY);
     h.emitRpc("updated");
     await vi.waitFor(() => expect(rootHeight(h.root())).toBe(cardHeight));
+  });
+});
+
+// ── A run's provider ────────────────────────────────────────────────────
+
+const RUN_ID = "actualyze-start";
+
+/**
+ * The provider a run of Actualyze Desktop or Atlas puts its models on;
+ * OpenCode then lists no `actualyze` provider, only its integration.
+ */
+const runProvider: HostProvider = {
+  id: RUN_ID,
+  name: "Actualyze",
+  package: "@opencode/ai/providers/openai-compatible",
+  settings: {
+    baseURL: "https://app.actualyze.ai/openai/v1",
+    probe: "actualyze",
+  },
+};
+
+const runModel: HostModel = {
+  ...hostModel,
+  id: "claude-sonnet",
+  providerID: RUN_ID,
+  name: "Claude Sonnet",
+};
+
+function runRecord(
+  overrides: Partial<CatalogProviderRecord> = {},
+): CatalogProviderRecord {
+  return record({
+    id: RUN_ID,
+    models: [{ ...modelRecord, id: "claude-sonnet" }],
+    ...overrides,
+  });
+}
+
+const ENV_KEY = { type: "env", name: "ACTUALYZE_API_KEY" };
+const LAPTOP_KEY = {
+  type: "credential",
+  id: "c1",
+  label: "Laptop",
+  method: "key",
+};
+
+/** The plugin's own integration. */
+function ownIntegration(
+  connections: IntegrationRow["connections"],
+): IntegrationRow {
+  return {
+    id: "actualyze",
+    name: "Actualyze",
+    methods: [{ type: "key" }, { type: "env", names: ["ACTUALYZE_API_KEY"] }],
+    connections,
+  };
+}
+
+/** The integration OpenCode registers for a Desktop run's provider. */
+const RUN_INTEGRATION: IntegrationRow = {
+  id: RUN_ID,
+  name: "Actualyze",
+  methods: [
+    { type: "key", label: "Manually enter API Key" },
+    { type: "env", names: ["ACTUALYZE_API_KEY"] },
+  ],
+  connections: [ENV_KEY],
+};
+
+const DESKTOP: State = {
+  connected: true,
+  catalog: payload(runRecord()),
+  hostProviders: [runProvider],
+  hostModels: [runModel],
+  integrations: [RUN_INTEGRATION, ownIntegration([ENV_KEY])],
+};
+
+/** An Atlas (V1) run: the key is in the run provider's settings.apiKey. */
+const ATLAS: State = {
+  ...DESKTOP,
+  connected: false,
+  catalog: payload(runRecord({ credentialSource: "settings" })),
+  integrations: [
+    {
+      id: RUN_ID,
+      name: "Actualyze",
+      methods: [{ type: "key", label: "Manually enter API Key" }],
+      connections: [],
+    },
+    ownIntegration([ENV_KEY]),
+  ],
+};
+
+/** Probed for actualyze and on the actualyze integration, so k is allowed. */
+const alias: HostProvider & { readonly integrationID: string } = {
+  id: "team-actualyze",
+  name: "Team Actualyze",
+  package: "@opencode/ai/providers/openai-compatible",
+  integrationID: "actualyze",
+  settings: {
+    baseURL: "https://app.actualyze.ai/openai/v1",
+    probe: "actualyze",
+  },
+};
+
+const aliasModel: HostModel = {
+  ...hostModel,
+  id: "claude-opus",
+  providerID: alias.id,
+  name: "Claude Opus",
+};
+
+/** The pane as running text: card bars dropped and wrapped rows joined. */
+function paneText(root: unknown): string {
+  return pane(root)
+    .split("\n")
+    .map((row) => row.replace(/^▌ ?/, ""))
+    .join(" ")
+    .replace(/\s+/g, " ");
+}
+
+function status(h: Harness): string {
+  return line(h.root(), "modelscout-status");
+}
+
+async function readyAt(h: Harness, pattern: RegExp): Promise<void> {
+  await h.open();
+  await vi.waitFor(() => expect(status(h)).toMatch(pattern));
+}
+
+describe("a Desktop run", () => {
+  it("lists the run's models as accessible, with the key from ACTUALYZE_API_KEY", async () => {
+    const h = harness(DESKTOP);
+    await readyAt(
+      h,
+      /^● Catalog accessible · key ACTUALYZE_API_KEY · 1 model · checked/,
+    );
+    expect(pane(h.root())).toContain("Claude Sonnet");
+  });
+
+  it("names the connection of the run provider's own integration", async () => {
+    const h = harness({
+      ...DESKTOP,
+      integrations: [
+        {
+          ...RUN_INTEGRATION,
+          connections: [{ ...LAPTOP_KEY, id: "c2", label: "Desktop" }],
+        },
+        ownIntegration([LAPTOP_KEY]),
+      ],
+    });
+    await readyAt(h, /^● Catalog accessible · key "Desktop" · 1 model/);
+  });
+
+  it("keeps k off although the run's integration offers a key method", async () => {
+    const h = harness(DESKTOP);
+    await readyAt(h, /^● Catalog accessible/);
+    h.press("k");
+    await settle();
+    expect(h.dialog.prompt).not.toHaveBeenCalled();
+    expect(h.connectKey).not.toHaveBeenCalled();
+  });
+
+  it("refreshes the run's provider with r", async () => {
+    const h = harness(DESKTOP);
+    await readyAt(h, /^● Catalog accessible/);
+    h.press("r");
+    await vi.waitFor(() => expect(h.refresh).toHaveBeenCalledOnce());
+    expect(h.refresh.mock.calls[0]?.[0]).toEqual({ providerID: RUN_ID });
+  });
+
+  it("names the run provider's base URL setting on a failure card", async () => {
+    const h = harness({
+      ...DESKTOP,
+      catalog: payload(
+        runRecord({
+          lastGoodAt: null,
+          models: [],
+          failure: { kind: "not-found", at: AT, httpStatus: 404 },
+        }),
+      ),
+      hostModels: [],
+    });
+    await openedAt(h, /The base URL may be wrong/);
+    expect(paneText(h.root())).toContain(
+      "The setting providers.actualyze-start.settings.baseURL should end in /openai/v1.",
+    );
+  });
+
+  it("names the run provider's base URL setting when the links screen has no links", async () => {
+    const h = harness({
+      ...DESKTOP,
+      hostProviders: [
+        {
+          ...runProvider,
+          settings: { baseURL: "ftp://gw.example/v1", probe: "actualyze" },
+        },
+      ],
+    });
+    await readyAt(h, /^● Catalog accessible/);
+    h.press("l");
+    await vi.waitFor(() =>
+      expect(paneText(h.root())).toContain(
+        "No app links: providers.actualyze-start.settings.baseURL is not an http(s) URL.",
+      ),
+    );
+  });
+
+  it("lists the run's models when another definition of actualyze exists", async () => {
+    const h = harness({ ...DESKTOP, catalog: payload(runRecord(), "foreign") });
+    await readyAt(h, /^● Catalog accessible · key ACTUALYZE_API_KEY/);
+    expect(pane(h.root())).toContain("Claude Sonnet");
+    expect(pane(h.root())).not.toMatch(/Another definition of actualyze/);
+  });
+});
+
+describe("an Atlas run", () => {
+  it("lists the run's models with the key from settings.apiKey and offers no key to connect", async () => {
+    const h = harness(ATLAS);
+    await readyAt(h, /^● Catalog accessible · key settings\.apiKey · 1 model/);
+    expect(pane(h.root())).toContain("Claude Sonnet");
+    expect(pane(h.root())).not.toMatch(/Connect an Actualyze API key/);
+  });
+});
+
+describe("the failure card's key source", () => {
+  const SERVER_ERROR: Partial<CatalogProviderRecord> = {
+    lastGoodAt: null,
+    models: [],
+    failure: { kind: "server-error", at: AT, httpStatus: 503 },
+  };
+  // Only a provider on the actualyze integration takes a key from k.
+  const cases: Array<[string, State, string, boolean]> = [
+    [
+      "actualyze with ACTUALYZE_API_KEY",
+      {
+        connected: true,
+        catalog: payload(record(SERVER_ERROR)),
+        hostProviders: [actualyzeProvider],
+        hostModels: [],
+        integrations: [ownIntegration([ENV_KEY])],
+      },
+      "The key comes from ACTUALYZE_API_KEY on the background service; a key connected with k takes precedence.",
+      true,
+    ],
+    [
+      "actualyze with settings.apiKey",
+      {
+        ...NO_KEY,
+        catalog: payload(
+          record({ ...SERVER_ERROR, credentialSource: "settings" }),
+        ),
+        hostProviders: [actualyzeProvider],
+      },
+      "The key comes from settings.apiKey in opencode.json; a key connected with k takes precedence.",
+      true,
+    ],
+    [
+      "an alias on the actualyze integration with settings.apiKey",
+      {
+        ...NO_KEY,
+        catalog: payload(
+          record({
+            ...SERVER_ERROR,
+            id: alias.id,
+            credentialSource: "settings",
+          }),
+        ),
+        hostProviders: [alias],
+      },
+      "The key comes from settings.apiKey in opencode.json; a key connected with k takes precedence.",
+      true,
+    ],
+    [
+      "a Desktop run",
+      { ...DESKTOP, catalog: payload(runRecord(SERVER_ERROR)), hostModels: [] },
+      "The key comes from ACTUALYZE_API_KEY in OpenCode's environment.",
+      false,
+    ],
+    [
+      "an Atlas run",
+      {
+        ...ATLAS,
+        catalog: payload(
+          runRecord({ ...SERVER_ERROR, credentialSource: "settings" }),
+        ),
+        hostModels: [],
+      },
+      "The key comes from providers.actualyze-start.settings.apiKey.",
+      false,
+    ],
+  ];
+
+  it.each(cases)(
+    "says where the key of %s comes from",
+    async (_name, state, note, pointsAtK) => {
+      const h = harness(state);
+      await openedAt(h, /Actualyze failed to list models/);
+      const text = paneText(h.root());
+      expect(text).toContain(note);
+      expect(text.split("The key comes from").length - 1).toBe(1);
+      expect(/\bk\b/.test(text)).toBe(pointsAtK);
+    },
+  );
+});
+
+describe("actualyze listed beside a run's provider", () => {
+  it("shows actualyze's models and key, and keeps k", async () => {
+    const h = harness({
+      connected: true,
+      catalog: payload([runRecord(), record()]),
+      // The run's provider comes first, so a first-match choice would pick it.
+      hostProviders: [runProvider, actualyzeProvider],
+      hostModels: [runModel, hostModel],
+      integrations: [RUN_INTEGRATION, ownIntegration([LAPTOP_KEY])],
+    });
+    await readyAt(h, /^● Catalog accessible · key "Laptop" · 1 model/);
+    expect(pane(h.root())).toContain("Claude Haiku");
+    expect(pane(h.root())).not.toContain("Claude Sonnet");
+    h.press("k");
+    expect(h.dialog.prompt).toHaveBeenCalledOnce();
+  });
+});
+
+describe("opening", () => {
+  it("waits for the first read of the stores and shows the dialog once, on the provider it names", async () => {
+    const h = harness(DESKTOP);
+    const read = deferred<void>();
+    h.context.data.location.provider.sync.mockReturnValueOnce(read.promise);
+    const opening = h.open();
+    await drain();
+    expect(h.dialog.show).not.toHaveBeenCalled();
+    read.resolve();
+    await opening;
+    await vi.waitFor(() =>
+      expect(status(h)).toMatch(
+        /^● Catalog accessible · key ACTUALYZE_API_KEY/,
+      ),
+    );
+    expect(h.dialog.show).toHaveBeenCalledOnce();
+  });
+
+  it("ends the session and shows nothing when the location changes before the first read ends", async () => {
+    const h = harness(DESKTOP);
+    const read = deferred<void>();
+    h.context.data.location.provider.sync.mockReturnValueOnce(read.promise);
+    const opening = h.open();
+    await settle();
+    h.context.location = { directory: "/elsewhere" };
+    read.resolve();
+    await opening;
+    expect(h.dialog.show).not.toHaveBeenCalled();
+    expect(h.stopFacts).toHaveBeenCalledTimes(4);
+  });
+
+  describe("when the first read takes longer than 1 s", () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /** Open with the first read held by `read`, and let the 1 s wait run out. */
+    async function openPastTheWait(
+      h: Harness,
+      read: Promise<void>,
+    ): Promise<void> {
+      h.context.data.location.provider.sync.mockReturnValueOnce(read);
+      const opening = h.open();
+      await vi.advanceTimersByTimeAsync(999);
+      expect(h.dialog.show).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await opening;
+      expect(h.dialog.show).toHaveBeenCalled();
+    }
+
+    it("shows the dialog again on the provider the late read names, and the session keeps working", async () => {
+      const h = harness(DESKTOP);
+      const read = deferred<void>();
+      await openPastTheWait(h, read.promise);
+      expect(h.dialog.show).toHaveBeenCalledOnce();
+      // Before any read the dialog shows actualyze, which a run does not list.
+      await vi.waitFor(() =>
+        expect(pane(h.root())).toMatch(/Waiting for discovery/),
+      );
+      const first = h.root();
+
+      read.resolve();
+      await vi.waitFor(() => expect(h.dialog.show).toHaveBeenCalledTimes(2));
+      await vi.waitFor(() =>
+        expect(status(h)).toMatch(
+          /^● Catalog accessible · key ACTUALYZE_API_KEY · 1 model/,
+        ),
+      );
+      expect(pane(h.root())).toContain("Claude Sonnet");
+      expect(h.stopFacts).not.toHaveBeenCalled();
+      // The dialog it replaced never painted the run's facts over actualyze.
+      expect(line(first, "modelscout-status")).not.toContain(
+        "ACTUALYZE_API_KEY",
+      );
+
+      // The session still follows OpenCode's events: a later read names
+      // actualyze, and k connects a key to it.
+      h.setState(READY);
+      h.emitFact("provider.updated");
+      await vi.waitFor(() => expect(h.dialog.show).toHaveBeenCalledTimes(3));
+      await vi.waitFor(() =>
+        expect(status(h)).toMatch(/^● Catalog accessible · key "Laptop"/),
+      );
+      await submitKey(h);
+      expect(h.connectKey.mock.calls[0]?.[0]).toMatchObject({
+        integrationID: "actualyze",
+      });
+      expect(h.stopFacts).not.toHaveBeenCalled();
+    });
+
+    it("shows the dialog again when the late read ends while the dialog opens", async () => {
+      const h = harness(DESKTOP);
+      const read = deferred<void>();
+      // The opening dialog subscribes to the server's events before its
+      // modules load; the read ends at that moment. This covers a read that
+      // ends while the dialog opens only as long as the browser keeps that
+      // order.
+      const rpc = h.context.client.rpc.getMockImplementation();
+      h.context.client.rpc.mockImplementationOnce(() => {
+        read.resolve();
+        if (!rpc) throw new Error("rpc has no implementation");
+        return rpc();
+      });
+      await openPastTheWait(h, read.promise);
+      await vi.waitFor(() => expect(h.dialog.show).toHaveBeenCalledTimes(2));
+      await vi.waitFor(() =>
+        expect(status(h)).toMatch(
+          /^● Catalog accessible · key ACTUALYZE_API_KEY/,
+        ),
+      );
+      await drain();
+      expect(h.dialog.show).toHaveBeenCalledTimes(2);
+      expect(h.stopFacts).not.toHaveBeenCalled();
+    });
+
+    it("shows nothing again when the late read names the provider already shown", async () => {
+      const h = harness(READY);
+      const read = deferred<void>();
+      await openPastTheWait(h, read.promise);
+      read.resolve();
+      // The read has landed once the status names the connected key.
+      await vi.waitFor(() => expect(status(h)).toMatch(/key "Laptop"/));
+      await drain();
+      expect(h.dialog.show).toHaveBeenCalledOnce();
+    });
+
+    it("shows nothing again when the dialog closed before the late read ended", async () => {
+      const h = harness(DESKTOP);
+      const read = deferred<void>();
+      await openPastTheWait(h, read.promise);
+      h.dialog.clear();
+      expect(h.stopFacts).toHaveBeenCalledTimes(4);
+
+      read.resolve();
+      await vi.waitFor(() =>
+        expect(h.context.data.location.integration.list).toHaveBeenCalled(),
+      );
+      await drain();
+      expect(h.dialog.show).toHaveBeenCalledOnce();
+      expect(h.current()).toBeUndefined();
+    });
+
+    it("ends the session and shows nothing when the location changes before the wait runs out", async () => {
+      const h = harness(DESKTOP);
+      const read = deferred<void>();
+      h.context.data.location.provider.sync.mockReturnValueOnce(read.promise);
+      const opening = h.open();
+      await vi.advanceTimersByTimeAsync(500);
+      h.context.location = { directory: "/elsewhere" };
+      await vi.advanceTimersByTimeAsync(500);
+      await opening;
+      expect(h.dialog.show).not.toHaveBeenCalled();
+      expect(h.stopFacts).toHaveBeenCalledTimes(4);
+
+      // The read that ends afterwards opens nothing either.
+      read.resolve();
+      await vi.waitFor(() =>
+        expect(h.context.data.location.integration.list).toHaveBeenCalled(),
+      );
+      await drain();
+      expect(h.dialog.show).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe("a read after the location changed", () => {
+  it("ends the session and closes the dialog instead of showing it on the provider the read names", async () => {
+    const h = harness(DESKTOP);
+    await readyAt(h, /^● Catalog accessible · key ACTUALYZE_API_KEY/);
+    h.context.location = { directory: "/elsewhere" };
+    h.setState(READY);
+    h.emitFact("provider.updated");
+    await vi.waitFor(() => expect(h.stopFacts).toHaveBeenCalledTimes(4));
+    expect(h.dialog.show).toHaveBeenCalledOnce();
+    expect(h.current()).toBeUndefined();
+  });
+});
+
+describe("the no-key card", () => {
+  it("on actualyze, offers k and copies the API Keys link", async () => {
+    const h = harness();
+    await openedAt(h, /Connect an Actualyze API key/);
+    expect(line(h.root(), "modelscout-footer")).toMatch(
+      /^connect key k {2}copy link y {2}links l {2}connections c {2}all providers b/,
+    );
+    h.press("y");
+    expect(h.copied).toHaveBeenLastCalledWith(
+      "https://app.actualyze.ai/account/settings?tab=security",
+    );
+    h.press("k");
+    expect(h.dialog.prompt).toHaveBeenCalledOnce();
+  });
+
+  it("on an alias on the actualyze integration, is actualyze's card with k and the API Keys link", async () => {
+    const h = harness({
+      ...NO_KEY,
+      catalog: payload(
+        record({
+          id: alias.id,
+          credentialSource: "none",
+          lastGoodAt: null,
+          models: [],
+        }),
+      ),
+      hostProviders: [alias],
+    });
+    await openedAt(h, /Connect an Actualyze API key/);
+    expect(pane(h.root())).not.toMatch(/No key for/);
+    h.press("y");
+    expect(h.copied).toHaveBeenLastCalledWith(
+      "https://app.actualyze.ai/account/settings?tab=security",
+    );
+    h.press("k");
+    expect(h.dialog.prompt).toHaveBeenCalledOnce();
+  });
+
+  it("on a run's provider, sends the member back to the launcher without k or a link to copy", async () => {
+    const h = harness({
+      ...DESKTOP,
+      catalog: payload(
+        runRecord({ credentialSource: "none", lastGoodAt: null, models: [] }),
+      ),
+      hostModels: [],
+      // actualyze's own connection is not the run provider's key.
+      integrations: [
+        { ...RUN_INTEGRATION, connections: [] },
+        ownIntegration([ENV_KEY]),
+      ],
+    });
+    await openedAt(h, /No key for actualyze-start/);
+    const text = paneText(h.root());
+    expect(text).toContain(
+      "A run that Actualyze Desktop or Atlas starts gets its key from them. Start the run again there.",
+    );
+    expect(text).toContain(
+      "For a provider in your own settings, set providers.actualyze-start.settings.apiKey or connect a key under c.",
+    );
+    expect(text).not.toMatch(/Connect an Actualyze API key/);
+    expect(status(h)).toMatch(/^○ Not connected/);
+    expect(line(h.root(), "modelscout-footer")).toMatch(
+      /^links l {2}connections c {2}all providers b {2}keys \?/,
+    );
+
+    h.press("k");
+    h.press("y");
+    await settle();
+    expect(h.dialog.prompt).not.toHaveBeenCalled();
+    expect(h.copied).not.toHaveBeenCalled();
+    h.press("c");
+    expect(h.dispatch).toHaveBeenCalledWith("provider.connect");
+  });
+});
+
+describe("a key connected while the dialog shows an alias provider", () => {
+  const aliasRecord = record({
+    id: alias.id,
+    credentialSource: "settings",
+    credentialEpoch: 3,
+    resultEpoch: 3,
+    models: [{ ...modelRecord, id: "claude-opus" }],
+  });
+
+  it("leaves checking once the dialog shows actualyze with its own record", async () => {
+    const h = harness({
+      connected: false,
+      catalog: payload(aliasRecord),
+      hostProviders: [alias],
+      hostModels: [aliasModel],
+    });
+    const save = deferred<void>();
+    h.connectKey.mockReturnValueOnce(save.promise);
+    await readyAt(h, /^● Catalog accessible · key settings\.apiKey · 1 model/);
+    await submitKey(h);
+    await vi.waitFor(() =>
+      expect(pane(h.root())).toMatch(/OpenCode is storing the key/),
+    );
+
+    // The connected key lists actualyze, whose record has epochs of its own
+    // in the same server instance.
+    h.setState({
+      connected: true,
+      catalog: payload([
+        aliasRecord,
+        record({ credentialEpoch: 0, resultEpoch: 0 }),
+      ]),
+      hostProviders: [actualyzeProvider, alias],
+      hostModels: [hostModel, aliasModel],
+    });
+    save.resolve();
+    await vi.waitFor(() =>
+      expect(status(h)).toMatch(
+        /^● Catalog accessible · key "Laptop" · 1 model/,
+      ),
+    );
+    expect(pane(h.root())).toContain("Claude Haiku");
+    expect(pane(h.root())).not.toMatch(/Key saved/);
   });
 });

@@ -170,6 +170,16 @@ the server's when you run `opencode --standalone`. The line under the header say
 things stand, and names the key in use: the connection's label in quotes,
 `ACTUALYZE_API_KEY` for the environment variable, or `settings.apiKey`.
 
+A run that Actualyze Desktop ("Through Actualyze") or Atlas (`aai start
+opencode`) starts puts its models on a provider of its own, `actualyze-start`,
+and keeps OpenCode off every other provider, so OpenCode does not list
+`actualyze` in that run. `/actualyze` shows `actualyze` whenever OpenCode lists
+it. Otherwise it shows the one listed provider whose `settings.probe` is
+`actualyze`, with that provider's endpoint and key. `k` stays off for such a
+provider, because it stores keys on the `actualyze` integration, which the run
+does not read. The run keeps the key it was started with. If it has none, the
+card says to start the run again from Actualyze Desktop or Atlas.
+
 An Actualyze inference key can read the model catalog and nothing about the
 account: no identity, usage, spend, or budget. So `/actualyze` reports
 "Catalog accessible" when the model list answered for the key, and never
@@ -211,10 +221,12 @@ status line starts with a title and gives the details below it.
 
 After a failure, a key that had a good catalog before keeps it: the card sits
 above the models from the last good check. When the key comes from
-`settings.apiKey` or `ACTUALYZE_API_KEY`, the failure card says so, and adds
-that a key connected with `k` takes precedence. When the provider's
-`headers` carry the key (`Authorization` or `X-Actualyze-Api-Key`), a notice
-says that discovery uses those headers, not the connected key.
+`settings.apiKey` or `ACTUALYZE_API_KEY`, the failure card says so. For a
+provider that reads the Actualyze integration it adds that a key connected
+with `k` takes precedence.
+When the provider's `headers` carry the key (`Authorization` or
+`X-Actualyze-Api-Key`), a notice says that discovery uses those headers, not
+the connected key.
 
 When `providers.actualyze.settings.probe` names no probe, the status line
 adds `▲ unknown probe` once the catalog is accessible, and a notice names the
