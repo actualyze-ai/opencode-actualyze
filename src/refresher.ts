@@ -56,7 +56,6 @@ import {
   type ProviderInventory,
 } from "./discover";
 import { toProbeKey } from "./probes/index";
-import { DEFAULT_STARTUP_TIMEOUT_MS, MAX_STARTUP_TIMEOUT_MS } from "./startup";
 import type { ProbeAttempt } from "./catalog-evidence";
 import type { RefreshOutput } from "./rpc";
 import {
@@ -79,6 +78,9 @@ import {
 
 export const DEFAULT_TIMEOUT_MS = 15_000;
 export const DEFAULT_REFRESH_INTERVAL_MS = 600_000;
+/** Startup discovery budget (#20, `startup.ts`); 0 disables the request. */
+export const DEFAULT_STARTUP_TIMEOUT_MS = 5_000;
+export const MAX_STARTUP_TIMEOUT_MS = 60_000;
 const MIN_TIMEOUT_MS = 1_000;
 const MAX_TIMEOUT_MS = 60_000;
 const MIN_INTERVAL_MS = 60_000;

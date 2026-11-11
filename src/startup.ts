@@ -30,11 +30,16 @@
  * commas are accepted. Parent directories of the project, managed
  * preferences and remote documents are not read.
  */
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { isPlainRecord } from "./catalog-evidence";
-import { ACTUALYZE_ENV, ACTUALYZE_PROBE_ID } from "./constants";
+import {
+  ACTUALYZE_ENV,
+  ACTUALYZE_INTEGRATION_ID,
+  ACTUALYZE_PROBE_ID,
+  NEVER_PROBED_PROVIDER_IDS,
+} from "./constants";
 import {
   discoverProvider,
   normalizeBaseURL,
@@ -49,9 +54,6 @@ import {
   type DiscoveryStore,
 } from "./store";
 import type { TransformState } from "./transform";
-
-export const DEFAULT_STARTUP_TIMEOUT_MS = 5_000;
-export const MAX_STARTUP_TIMEOUT_MS = 60_000;
 
 /** One provider entry read from the configuration, with its key resolved. */
 export interface ConfiguredEntry {
@@ -198,6 +200,8 @@ export function substitute(
 
 interface ConfigDocument {
   readonly providers: Record<string, unknown>;
+  /** `disabled_providers`, which the host never lists. */
+  readonly disabled: readonly string[];
 }
 
 function parseDocument(
@@ -211,9 +215,14 @@ function parseDocument(
   } catch {
     return undefined;
   }
-  if (!isPlainRecord(parsed) || !isPlainRecord(parsed.providers))
-    return undefined;
-  return { providers: parsed.providers };
+  if (!isPlainRecord(parsed)) return undefined;
+  const providers = isPlainRecord(parsed.providers) ? parsed.providers : {};
+  const disabled = Array.isArray(parsed.disabled_providers)
+    ? parsed.disabled_providers.filter(
+        (id): id is string => typeof id === "string",
+      )
+    : [];
+  return { providers, disabled };
 }
 
 function readDocument(
@@ -222,7 +231,6 @@ function readDocument(
 ): ConfigDocument | undefined {
   let text: string;
   try {
-    if (!existsSync(file)) return undefined;
     text = readFileSync(file, "utf8");
   } catch {
     return undefined;
@@ -284,7 +292,9 @@ function nonEmptyString(value: unknown): string | undefined {
  * The entries startup discovery may read: `settings.probe` is the Actualyze
  * probe, `settings.baseURL` is an http(s) URL, and `settings.apiKey` is
  * present. Settings of the same provider in a later document override
- * those of an earlier one key by key, as OpenCode merges them.
+ * those of an earlier one key by key, as OpenCode merges them. A provider
+ * the refresher never targets is left out too: one named in
+ * `disabled_providers` by any document, and the never-probed ids.
  */
 export function readConfiguredEntries(
   sources: ConfigSources,
@@ -293,7 +303,9 @@ export function readConfiguredEntries(
     string,
     { settings: Record<string, unknown>; headers: unknown }
   >();
+  const disabled = new Set<string>();
   for (const document of configDocuments(sources)) {
+    for (const id of document.disabled) disabled.add(id);
     for (const [providerID, entry] of Object.entries(document.providers)) {
       if (!isPlainRecord(entry)) continue;
       const previous = merged.get(providerID);
@@ -306,6 +318,8 @@ export function readConfiguredEntries(
   }
   const entries: ConfiguredEntry[] = [];
   for (const [providerID, { settings, headers }] of merged) {
+    if (NEVER_PROBED_PROVIDER_IDS.has(providerID) || disabled.has(providerID))
+      continue;
     if (settings.probe !== ACTUALYZE_PROBE_ID) continue;
     const baseURL = nonEmptyString(settings.baseURL);
     if (!baseURL || !isHttpURL(baseURL)) continue;
@@ -339,8 +353,8 @@ export interface StartupDeps {
   readonly timeoutMs: number;
   /**
    * The value of the Actualyze integration's environment variable
-   * (`ACTUALYZE_API_KEY`), when set: an entry whose key is that value is
-   * also seeded under the integration credential the host will resolve.
+   * (`ACTUALYZE_API_KEY`), when set: the `actualyze` entry whose key is that
+   * value is also seeded under the integration credential the host resolves.
    */
   readonly integrationEnvKey?: string | undefined;
   readonly discover?: (
@@ -378,13 +392,16 @@ export function environmentCredential(key: string): `integration:${string}` {
 /**
  * Serve each configured entry before the first model transform: its stored
  * binding when the store holds one for the entry's endpoint and key, else
- * the result of one discovery against the entry's own base URL with the
- * entry's own key. The entries run concurrently, each bounded by
- * `timeoutMs`, so `setup` waits at most one budget. A failure or timeout
- * changes nothing; the refresher discovers later as before. The binding is
- * served as the entry's `settings.apiKey` credential, and, when the key is
- * the integration's environment key, seeded under that credential too; the
- * first sync keeps whichever the host resolves and replaces the other.
+ * the result of one discovery job against the entry's own base URL with
+ * the entry's own key, started through the store so it shares an in-flight
+ * job for the same key, honours the store's throttle and the server's
+ * retry hint, and records a failure as every other discovery does. The
+ * entries run concurrently, each bounded by `timeoutMs`, so `setup` waits
+ * at most one budget. A failure or timeout changes nothing else; the
+ * refresher discovers later as before. The binding is served as the entry's
+ * `settings.apiKey` credential, and, for the `actualyze` provider whose key
+ * is the integration's environment key, seeded under that credential too;
+ * the first sync keeps whichever the host resolves and replaces the other.
  */
 export async function startupDiscovery(
   deps: StartupDeps,
@@ -405,51 +422,49 @@ export async function startupDiscovery(
     }
     if (deps.timeoutMs <= 0)
       return { providerID: entry.providerID, source: "skipped" };
-    let result: DiscoveryResult;
-    try {
-      result = await discover(
-        {
-          providerID: entry.providerID,
-          baseURL: entry.baseURL,
-          apiKey: entry.apiKey,
-          probe: entry.probe,
-          ...(entry.headers ? { headers: entry.headers } : {}),
-        },
-        AbortSignal.timeout(deps.timeoutMs),
-      );
-    } catch (error) {
-      return {
-        providerID: entry.providerID,
-        source: "failed",
-        reason: error instanceof Error ? error.message : String(error),
-      };
-    }
-    if (!result.ok)
-      return {
-        providerID: entry.providerID,
-        source: "failed",
-        reason: result.failure,
-      };
-    const binding: Binding = {
-      key: keys.key,
+    const target: DiscoveryTarget = {
+      providerID: entry.providerID,
+      baseURL: entry.baseURL,
+      apiKey: entry.apiKey,
+      probe: entry.probe,
+      ...(entry.headers ? { headers: entry.headers } : {}),
+    };
+    const started = deps.store.start(keys.key, {
+      credential: "settings",
       endpointKey: keys.endpointKey,
       providerID: entry.providerID,
-      credential: "settings",
-      inventory: result.inventory,
-    };
+      timeoutMs: deps.timeoutMs,
+      run: (signal) => discover(target, signal),
+    });
+    if (started === "throttled")
+      return {
+        providerID: entry.providerID,
+        source: "failed",
+        reason: "throttled",
+      };
+    await deps.store.settled(keys.key);
+    const binding = deps.store.served(keys.key);
+    if (!binding)
+      return {
+        providerID: entry.providerID,
+        source: "failed",
+        reason: deps.store.state(keys.key)?.failure?.kind ?? "error",
+      };
     const seeded: Binding[] = [binding];
     if (
+      entry.providerID === ACTUALYZE_INTEGRATION_ID &&
       deps.integrationEnvKey !== undefined &&
       deps.integrationEnvKey === entry.apiKey
     ) {
       const credential = environmentCredential(entry.apiKey);
-      seeded.push({
+      const twin: Binding = {
         ...binding,
         key: credentialKeys(keys, credential).key,
         credential,
-      });
+      };
+      deps.store.seed(twin);
+      seeded.push(twin);
     }
-    for (const each of seeded) deps.store.seed(each);
     deps.state.active.set(entry.providerID, binding);
     if (deps.persist) {
       for (const each of seeded) {

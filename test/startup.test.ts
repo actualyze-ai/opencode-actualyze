@@ -146,13 +146,15 @@ describe("configDocuments", () => {
     ]);
   });
 
-  it("skips a file that is not JSON or has no providers", () => {
+  it("skips a file that is not JSON and reads one with no providers as empty", () => {
     writeFileSync(path.join(cwd, "opencode.json"), "{ not json");
     writeFileSync(
       path.join(configHome, "opencode", "opencode.json"),
       JSON.stringify({ model: "x" }),
     );
-    expect(configDocuments(sources())).toEqual([]);
+    expect(configDocuments(sources())).toEqual([
+      { providers: {}, disabled: [] },
+    ]);
   });
 });
 
@@ -245,6 +247,31 @@ describe("readConfiguredEntries", () => {
         headers: { "x-team": "t" },
       },
     ]);
+  });
+
+  it("leaves out a provider named in disabled_providers by any document and the never-probed ids", () => {
+    writeFileSync(
+      path.join(configHome, "opencode", "opencode.json"),
+      JSON.stringify({ disabled_providers: ["actualyze"] }),
+    );
+    const content = JSON.stringify({
+      providers: {
+        actualyze: {
+          settings: { baseURL: BASE, apiKey: "k", probe: ACTUALYZE_PROBE_ID },
+        },
+        vllm: {
+          settings: { baseURL: BASE, apiKey: "k", probe: ACTUALYZE_PROBE_ID },
+        },
+        "actualyze-stage": {
+          settings: { baseURL: BASE, apiKey: "k", probe: ACTUALYZE_PROBE_ID },
+        },
+      },
+    });
+    expect(
+      readConfiguredEntries(sources({ OPENCODE_CONFIG_CONTENT: content })).map(
+        (e) => e.providerID,
+      ),
+    ).toEqual(["actualyze-stage"]);
   });
 
   it("lets the project file override the OPENCODE_CONFIG file, as the host does", () => {
@@ -431,12 +458,12 @@ describe("startupDiscovery", () => {
     expect(
       await startupDiscovery({
         entries: [entry],
-        store,
+        store: createStore(),
         state,
         timeoutMs: 5000,
         discover: throwing,
       }),
-    ).toEqual([{ providerID: "actualyze", source: "failed", reason: "boom" }]);
+    ).toEqual([{ providerID: "actualyze", source: "failed", reason: "error" }]);
     const skipped = vi.fn();
     expect(
       await startupDiscovery({
@@ -450,6 +477,57 @@ describe("startupDiscovery", () => {
     expect(skipped).not.toHaveBeenCalled();
     expect(state.active.size).toBe(0);
     expect(store.served(keysOf(entry).key)).toBeUndefined();
+  });
+
+  it("goes through the store's job path: a failed start is recorded and an immediate second start is throttled without a request", async () => {
+    const store = createStore();
+    const state = createTransformState();
+    const failing = vi.fn(
+      async (): Promise<DiscoveryResult> => ({
+        ok: false,
+        failure: "unreachable",
+        modelListAttempt: "unreachable",
+      }),
+    );
+    await startupDiscovery({
+      entries: [entry],
+      store,
+      state,
+      timeoutMs: 5000,
+      discover: failing,
+    });
+    expect(store.state(keysOf(entry).key)?.failure?.kind).toBe("unreachable");
+    const again = vi.fn(ok(["gpt-4o"]));
+    expect(
+      await startupDiscovery({
+        entries: [entry],
+        store,
+        state,
+        timeoutMs: 5000,
+        discover: again,
+      }),
+    ).toEqual([
+      { providerID: "actualyze", source: "failed", reason: "throttled" },
+    ]);
+    expect(again).not.toHaveBeenCalled();
+  });
+
+  it("does not seed the integration credential for a provider other than actualyze", async () => {
+    const store = createStore();
+    const state = createTransformState();
+    const stage: ConfiguredEntry = { ...entry, providerID: "actualyze-stage" };
+    const persist = vi.fn(async () => {});
+    await startupDiscovery({
+      entries: [stage],
+      store,
+      state,
+      timeoutMs: 5000,
+      integrationEnvKey: "k1",
+      discover: vi.fn(ok(["gpt-4o"])),
+      persist,
+    });
+    expect(persist).toHaveBeenCalledTimes(1);
+    expect(state.active.get("actualyze-stage")?.credential).toBe("settings");
   });
 
   it("runs the entries concurrently, each with its own abort signal, so the wait is one budget", async () => {

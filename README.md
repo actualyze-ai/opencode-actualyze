@@ -396,7 +396,10 @@ by setting, `{env:NAME}` and `{file:path}` are replaced anywhere in a
 document's text before it is parsed (a file path relative to that
 document's directory), and comments and trailing commas are accepted.
 Several such entries are discovered at the same time, so the wait is one
-budget. When the entry's key is also the value of `ACTUALYZE_API_KEY` on
+budget, through the same job path as every other discovery (an in-flight
+job for the same key is joined, the one-minute throttle and a server's
+retry hint are honoured, and a failure is recorded). A provider named in
+`disabled_providers`, and the never-probed ids, are left out. When the entry's key is also the value of `ACTUALYZE_API_KEY` on
 the service (the `aai start` launch's shape), the inventory is stored
 under the connected key as well, so the first background check keeps it
 instead of discovering again.

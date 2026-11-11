@@ -9,6 +9,7 @@ import {
   ACTIVATION_PROBE_MS,
   createRefresher,
   DEFAULT_REFRESH_INTERVAL_MS,
+  DEFAULT_STARTUP_TIMEOUT_MS,
   DEFAULT_TIMEOUT_MS,
   loadPersisted,
   readOptions,
@@ -20,7 +21,6 @@ import {
   type PersistedBinding,
   type RefresherHost,
 } from "../src/refresher";
-import { DEFAULT_STARTUP_TIMEOUT_MS } from "../src/startup";
 import {
   createStore,
   MIN_REFRESH_INTERVAL_MS,
