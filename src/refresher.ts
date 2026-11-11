@@ -56,6 +56,7 @@ import {
   type ProviderInventory,
 } from "./discover";
 import { toProbeKey } from "./probes/index";
+import { DEFAULT_STARTUP_TIMEOUT_MS, MAX_STARTUP_TIMEOUT_MS } from "./startup";
 import type { ProbeAttempt } from "./catalog-evidence";
 import type { RefreshOutput } from "./rpc";
 import {
@@ -113,6 +114,12 @@ export interface RefresherOptions {
   readonly timeoutMs: number;
   /** 0 disables periodic refresh. */
   readonly refreshIntervalMs: number;
+  /**
+   * Time budget for the startup discovery of a file-configured Actualyze
+   * entry (#20); 0 disables the network step and serves only stored
+   * inventories at start.
+   */
+  readonly startupTimeoutMs: number;
 }
 
 function finiteNumber(value: unknown): number | undefined {
@@ -127,7 +134,17 @@ export function readOptions(
 ): RefresherOptions {
   const timeout = finiteNumber(options?.timeoutMs);
   const interval = finiteNumber(options?.refreshIntervalMs);
+  const startup = finiteNumber(options?.startupTimeoutMs);
   return {
+    startupTimeoutMs:
+      startup === undefined
+        ? DEFAULT_STARTUP_TIMEOUT_MS
+        : startup <= 0
+          ? 0
+          : Math.min(
+              MAX_STARTUP_TIMEOUT_MS,
+              Math.max(MIN_TIMEOUT_MS, Math.round(startup)),
+            ),
     timeoutMs:
       timeout === undefined
         ? DEFAULT_TIMEOUT_MS

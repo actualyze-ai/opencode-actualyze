@@ -196,6 +196,7 @@ function setup(
     options: {
       timeoutMs: 15_000,
       refreshIntervalMs: options.refreshIntervalMs ?? 0,
+      startupTimeoutMs: 0,
     },
     state,
     store,
