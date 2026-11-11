@@ -389,9 +389,17 @@ or from remote documents are not covered, and neither is the built-in
 `actualyze` provider when its key is a connected integration key with no
 config entry: those get their models once loading finishes. The plugin
 reads the configuration sources in OpenCode's order (the global directory,
-the project's `.opencode` directory, the project directory, the file
-`OPENCODE_CONFIG` names, then `OPENCODE_CONFIG_CONTENT`); a later source
-overrides an earlier one setting by setting.
+the file `OPENCODE_CONFIG` names, the project's `opencode.json` or
+`opencode.jsonc`, the project's `.opencode` directory, then
+`OPENCODE_CONFIG_CONTENT`); a later source overrides an earlier one setting
+by setting, `{env:NAME}` and `{file:path}` are replaced anywhere in a
+document's text before it is parsed (a file path relative to that
+document's directory), and comments and trailing commas are accepted.
+Several such entries are discovered at the same time, so the wait is one
+budget. When the entry's key is also the value of `ACTUALYZE_API_KEY` on
+the service (the `aai start` launch's shape), the inventory is stored
+under the connected key as well, so the first background check keeps it
+instead of discovering again.
 
 When OpenCode restarts plugins in a project that is already open:
 

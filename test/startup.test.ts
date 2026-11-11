@@ -2,18 +2,25 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ACTUALYZE_PROBE_ID } from "../src/constants";
+import { ACTUALYZE_ENV, ACTUALYZE_PROBE_ID } from "../src/constants";
 import {
   normalizeBaseURL,
   type DiscoveryResult,
   type DiscoveryTarget,
 } from "../src/discover";
-import { createStore, targetKeys, type Binding } from "../src/store";
+import {
+  createStore,
+  credentialKeys,
+  targetKeys,
+  type Binding,
+} from "../src/store";
 import {
   configDocuments,
+  environmentCredential,
   readConfiguredEntries,
   startupDiscovery,
   stripJsonComments,
+  substitute,
   type ConfiguredEntry,
 } from "../src/startup";
 import { createTransformState } from "../src/transform";
@@ -69,10 +76,50 @@ describe("stripJsonComments", () => {
       a: 'q"//x',
     });
   });
+
+  it("drops trailing commas before a closing bracket, comments between included, and keeps commas inside strings", () => {
+    const text = `{
+      "list": [1, 2, // last
+      ],
+      "settings": { "apiKey": "a,b", "probe": "actualyze", /* end */ },
+    }`;
+    expect(JSON.parse(stripJsonComments(text))).toEqual({
+      list: [1, 2],
+      settings: { apiKey: "a,b", probe: "actualyze" },
+    });
+  });
+});
+
+describe("substitute", () => {
+  it("replaces {env:NAME} and {file:path} anywhere in the text, a file path relative to the document's directory", () => {
+    writeFileSync(path.join(cwd, "key.txt"), "from-file\n");
+    const text =
+      '{"baseURL": "https://{env:HOST}/openai/v1", "apiKey": "pre-{file:key.txt}"}';
+    expect(JSON.parse(substitute(text, cwd, { HOST: "h.example" }))).toEqual({
+      baseURL: "https://h.example/openai/v1",
+      apiKey: "pre-from-file",
+    });
+  });
+
+  it("substitutes a missing variable or an unreadable file as the empty string and leaves a token on a comment line alone", () => {
+    const text =
+      '{\n  // {file:nothing.txt}\n  "a": "{env:MISSING}", "b": "{file:nothing.txt}"\n}';
+    expect(JSON.parse(stripJsonComments(substitute(text, cwd, {})))).toEqual({
+      a: "",
+      b: "",
+    });
+  });
+
+  it("escapes a value that would break the JSON on the second pass", () => {
+    const text = '{"a": "{env:P}"}';
+    expect(JSON.parse(substitute(text, cwd, { P: 'C:\\x "q"' }))).toEqual({
+      a: 'C:\\x "q"',
+    });
+  });
 });
 
 describe("configDocuments", () => {
-  it("reads the global, project .opencode, project, OPENCODE_CONFIG and OPENCODE_CONFIG_CONTENT sources in that order", () => {
+  it("reads the global, OPENCODE_CONFIG, project, project .opencode and OPENCODE_CONFIG_CONTENT sources in OpenCode's order", () => {
     writeFileSync(
       path.join(configHome, "opencode", "opencode.json"),
       providerJSON("g", {}),
@@ -92,13 +139,11 @@ describe("configDocuments", () => {
     );
     expect(documents.map((d) => Object.keys(d.providers)[0])).toEqual([
       "g",
-      "d",
-      "p",
       "e",
+      "p",
+      "d",
       "c",
     ]);
-    expect(documents[3]?.directory).toBe(root);
-    expect(documents[4]?.directory).toBe(cwd);
   });
 
   it("skips a file that is not JSON or has no providers", () => {
@@ -112,7 +157,7 @@ describe("configDocuments", () => {
 });
 
 describe("readConfiguredEntries", () => {
-  it("keeps only an entry with the Actualyze probe, an http(s) baseURL and a resolvable apiKey", () => {
+  it("keeps only an entry with the Actualyze probe, an http(s) baseURL and an apiKey", () => {
     const content = JSON.stringify({
       providers: {
         actualyze: {
@@ -128,10 +173,10 @@ describe("readConfiguredEntries", () => {
             probe: ACTUALYZE_PROBE_ID,
           },
         },
-        unresolved: {
+        emptykey: {
           settings: {
             baseURL: BASE,
-            apiKey: "{secret:x}",
+            apiKey: "{env:UNSET}",
             probe: ACTUALYZE_PROBE_ID,
           },
         },
@@ -149,28 +194,32 @@ describe("readConfiguredEntries", () => {
     ]);
   });
 
-  it("resolves {env:NAME} from the environment and {file:path} against the document's directory", () => {
-    writeFileSync(path.join(cwd, "key.txt"), "from-file\n");
+  it("resolves each document's substitutions against that document's own directory", () => {
+    writeFileSync(path.join(configHome, "opencode", "key.txt"), "global-key\n");
+    writeFileSync(path.join(cwd, "endpoint.txt"), `${BASE}\n`);
     writeFileSync(
-      path.join(cwd, "opencode.json"),
-      providerJSON("a", {
-        baseURL: "{env:BASE}",
+      path.join(configHome, "opencode", "opencode.json"),
+      providerJSON("actualyze", {
+        baseURL: "http://global/v1",
         apiKey: "{file:key.txt}",
         probe: ACTUALYZE_PROBE_ID,
       }),
     );
-    expect(readConfiguredEntries(sources({ BASE }))).toEqual([
+    writeFileSync(
+      path.join(cwd, "opencode.json"),
+      providerJSON("actualyze", { baseURL: "{file:endpoint.txt}" }),
+    );
+    expect(readConfiguredEntries(sources())).toEqual([
       {
-        providerID: "a",
+        providerID: "actualyze",
         baseURL: BASE,
-        apiKey: "from-file",
+        apiKey: "global-key",
         probe: ACTUALYZE_PROBE_ID,
       },
     ]);
-    expect(readConfiguredEntries(sources({}))).toEqual([]);
   });
 
-  it("lets a later source override an earlier one key by key and carries string headers", () => {
+  it("lets a later source override an earlier one key by key and carries string headers; a trailing comma is accepted", () => {
     writeFileSync(
       path.join(configHome, "opencode", "opencode.json"),
       providerJSON(
@@ -185,7 +234,7 @@ describe("readConfiguredEntries", () => {
     );
     writeFileSync(
       path.join(cwd, "opencode.json"),
-      providerJSON("actualyze", { baseURL: BASE }),
+      `{ "providers": { "actualyze": { "settings": { "baseURL": "${BASE}", }, }, }, }`,
     );
     expect(readConfiguredEntries(sources())).toEqual([
       {
@@ -196,6 +245,25 @@ describe("readConfiguredEntries", () => {
         headers: { "x-team": "t" },
       },
     ]);
+  });
+
+  it("lets the project file override the OPENCODE_CONFIG file, as the host does", () => {
+    const explicit = path.join(root, "explicit.json");
+    writeFileSync(
+      explicit,
+      providerJSON("actualyze", {
+        baseURL: "http://stage/v1",
+        apiKey: "k",
+        probe: ACTUALYZE_PROBE_ID,
+      }),
+    );
+    writeFileSync(
+      path.join(cwd, "opencode.json"),
+      providerJSON("actualyze", { baseURL: BASE }),
+    );
+    expect(
+      readConfiguredEntries(sources({ OPENCODE_CONFIG: explicit }))[0]?.baseURL,
+    ).toBe(BASE);
   });
 });
 
@@ -220,6 +288,12 @@ describe("startupDiscovery", () => {
     models: ids.map((id) => ({ id })),
     completedAt: "2026-11-10T00:00:00.000Z",
   });
+  const ok =
+    (ids: string[]) =>
+    async (
+      _target: DiscoveryTarget,
+      _signal: AbortSignal,
+    ): Promise<DiscoveryResult> => ({ ok: true, inventory: inventory(ids) });
 
   it("serves a stored binding for the entry's endpoint and key without any request", async () => {
     const store = createStore();
@@ -233,7 +307,7 @@ describe("startupDiscovery", () => {
       inventory: inventory(["gpt-4o"]),
     };
     store.seed(stored);
-    const discover = vi.fn();
+    const discover = vi.fn(ok([]));
     const outcomes = await startupDiscovery({
       entries: [entry],
       store,
@@ -250,15 +324,7 @@ describe("startupDiscovery", () => {
     const store = createStore();
     const state = createTransformState();
     const persist = vi.fn(async () => {});
-    const discover = vi.fn(
-      async (
-        _target: DiscoveryTarget,
-        _signal: AbortSignal,
-      ): Promise<DiscoveryResult> => ({
-        ok: true,
-        inventory: inventory(["gpt-4o", "gpt-4o-mini"]),
-      }),
-    );
+    const discover = vi.fn(ok(["gpt-4o", "gpt-4o-mini"]));
     const outcomes = await startupDiscovery({
       entries: [entry],
       store,
@@ -286,7 +352,56 @@ describe("startupDiscovery", () => {
       credential: "settings",
     });
     expect(state.active.get("actualyze")).toBe(served);
+    expect(persist).toHaveBeenCalledTimes(1);
     expect(persist).toHaveBeenCalledWith(served);
+  });
+
+  it("also seeds the binding under the integration's environment credential when the key is the environment key, so the first sync keeps it", async () => {
+    const store = createStore();
+    const state = createTransformState();
+    const persist = vi.fn(async () => {});
+    await startupDiscovery({
+      entries: [entry],
+      store,
+      state,
+      timeoutMs: 5000,
+      integrationEnvKey: "k1",
+      discover: vi.fn(ok(["gpt-4o"])),
+      persist,
+    });
+    const keys = keysOf(entry);
+    const credential = environmentCredential("k1");
+    expect(credential).toMatch(/^integration:[0-9a-f]{64}$/);
+    const integrationKey = credentialKeys(keys, credential).key;
+    expect(store.served(integrationKey)).toBeUndefined();
+    expect(store.verify(integrationKey, credential)).toBe(true);
+    expect(store.served(integrationKey)).toMatchObject({
+      key: integrationKey,
+      endpointKey: keys.endpointKey,
+      credential,
+    });
+    expect(state.active.get("actualyze")?.credential).toBe("settings");
+    expect(persist).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not seed the integration credential when the environment key differs from the entry's key", async () => {
+    const store = createStore();
+    const state = createTransformState();
+    await startupDiscovery({
+      entries: [entry],
+      store,
+      state,
+      timeoutMs: 5000,
+      integrationEnvKey: "other",
+      discover: vi.fn(ok(["gpt-4o"])),
+    });
+    const integrationKey = credentialKeys(
+      keysOf(entry),
+      environmentCredential("other"),
+    ).key;
+    expect(store.verify(integrationKey, environmentCredential("other"))).toBe(
+      false,
+    );
   });
 
   it("changes nothing on a failed or thrown discovery, and skips the request when the budget is 0", async () => {
@@ -337,24 +452,40 @@ describe("startupDiscovery", () => {
     expect(store.served(keysOf(entry).key)).toBeUndefined();
   });
 
-  it("hands discovery a signal that aborts after the budget", async () => {
+  it("runs the entries concurrently, each with its own abort signal, so the wait is one budget", async () => {
     const store = createStore();
     const state = createTransformState();
-    let signal: AbortSignal | undefined;
+    const started: string[] = [];
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => (release = resolve));
     const discover = vi.fn(
-      async (_t: DiscoveryTarget, s: AbortSignal): Promise<DiscoveryResult> => {
-        signal = s;
-        return { ok: false, failure: "timeout", modelListAttempt: "aborted" };
+      async (
+        target: DiscoveryTarget,
+        signal: AbortSignal,
+      ): Promise<DiscoveryResult> => {
+        expect(signal).toBeInstanceOf(AbortSignal);
+        started.push(target.providerID);
+        await gate;
+        return { ok: true, inventory: inventory([`m-${target.providerID}`]) };
       },
     );
-    await startupDiscovery({
-      entries: [entry],
+    const second: ConfiguredEntry = {
+      ...entry,
+      providerID: "actualyze-stage",
+    };
+    const pending = startupDiscovery({
+      entries: [entry, second],
       store,
       state,
       timeoutMs: 1234,
       discover,
     });
-    expect(signal).toBeInstanceOf(AbortSignal);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(started).toEqual(["actualyze", "actualyze-stage"]);
+    release?.();
+    const outcomes = await pending;
+    expect(outcomes.map((o) => o.source)).toEqual(["discovered", "discovered"]);
+    expect(state.active.size).toBe(2);
   });
 });
 
@@ -368,5 +499,9 @@ describe("readOptions startupTimeoutMs", () => {
     expect(readOptions({ startupTimeoutMs: 0 }).startupTimeoutMs).toBe(0);
     expect(readOptions({ startupTimeoutMs: -5 }).startupTimeoutMs).toBe(0);
     expect(readOptions({ startupTimeoutMs: "x" }).startupTimeoutMs).toBe(5000);
+  });
+
+  it("names the integration's environment variable the double seed keys on", () => {
+    expect(ACTUALYZE_ENV).toBe("ACTUALYZE_API_KEY");
   });
 });

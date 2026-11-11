@@ -13,7 +13,7 @@
  */
 import type { Plugin } from "@opencode/plugin";
 import { version as packageVersion } from "../package.json";
-import { PLUGIN_ID } from "./constants";
+import { ACTUALYZE_ENV, PLUGIN_ID } from "./constants";
 import { isPlainRecord } from "./catalog-evidence";
 import { ModelScoutRpc } from "./rpc";
 import {
@@ -113,6 +113,7 @@ const plugin = {
         store,
         state,
         timeoutMs: options.startupTimeoutMs,
+        integrationEnvKey: process.env[ACTUALYZE_ENV],
         persist: (binding) =>
           context.storage.set(
             `${STORAGE_PREFIX}${binding.key}`,
